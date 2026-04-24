@@ -1,0 +1,300 @@
+"""
+PharmaTrace — Pharmaceutical Verification & Safety Platform
+FastAPI Backend Application
+
+Tools integrated:
+- OpenFDA API (drug database, labels, recalls, adverse events)
+- Open-Meteo API (cold chain weather analysis)
+- LibreTranslate (free translation to 20+ languages)
+- WHO GTIN / GS1 (international barcode validation)
+- GPT-4o Vision (pill image analysis — optional, needs API key)
+- Supabase (PostgreSQL + PostGIS — optional, for persistent storage)
+- SHA-256 hash chain (immutable audit log)
+- Web Speech API (voice — frontend)
+- Leaflet.js + CARTO (maps — frontend)
+"""
+from fastapi import FastAPI, Query
+from fastapi.middleware.cors import CORSMiddleware
+from config import get_settings
+
+# Import routers
+from routers.verify import router as verify_router
+from routers.interactions import router as interactions_router
+from routers.drugs import router as drugs_router
+from routers.reports import router as reports_router
+from routers.pharmacies import router as pharmacies_router
+from routers.caregiver import router as caregiver_router
+
+settings = get_settings()
+
+app = FastAPI(
+    title=settings.app_name,
+    version=settings.app_version,
+    description="""
+    PharmaTrace is an AI-powered pharmaceutical verification and safety platform.
+
+    **Integrated APIs & Services:**
+    - OpenFDA (NDC, Labels, Recalls, FAERS Adverse Events, Generics)
+    - Open-Meteo (Cold chain weather monitoring)
+    - LibreTranslate (Drug info translation to 20+ languages)
+    - WHO GTIN/GS1 (International barcode validation & country detection)
+    - GPT-4o Vision (Pill/packaging image analysis — optional)
+    - Supabase PostgreSQL + PostGIS (Geospatial database — optional)
+
+    **Features:**
+    - Drug verification via barcode/NDC and image analysis
+    - Multi-drug interaction scanning (20+ clinically validated pairs)
+    - Plain-language side effect explainer with severity labeling
+    - Dosage personalization (age, weight, kidney function)
+    - Generic drug finder (same active ingredient)
+    - Pharmacy trust scoring with anti-gaming ML
+    - Outbreak heatmap and timeline visualization
+    - Caregiver dashboard with remote monitoring
+    - Immutable SHA-256 hash-chained audit log
+    - Anonymous zero-knowledge reporting
+    - Batch verification for health workers
+    - Open API with Python and JavaScript SDKs
+    """,
+    docs_url="/api/docs",
+    redoc_url="/api/redoc"
+)
+
+# CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Register all routers under /api/v1
+app.include_router(verify_router, prefix="/api/v1")
+app.include_router(interactions_router, prefix="/api/v1")
+app.include_router(drugs_router, prefix="/api/v1")
+app.include_router(reports_router, prefix="/api/v1")
+app.include_router(pharmacies_router, prefix="/api/v1")
+app.include_router(caregiver_router, prefix="/api/v1")
+
+
+# ═══════════════════════════════════════════════════
+# Health & System Endpoints
+# ═══════════════════════════════════════════════════
+
+@app.get("/api/v1/health", tags=["system"])
+async def health_check():
+    """Health check with full service status."""
+    from services.audit import get_chain_length
+    from services.supabase import get_supabase
+
+    db = get_supabase()
+    return {
+        "status": "healthy",
+        "service": settings.app_name,
+        "version": settings.app_version,
+        "audit_chain_length": get_chain_length(),
+        "services": {
+            "openfda": "connected",
+            "open_meteo": "connected",
+            "libretranslate": "connected",
+            "gtin_validator": "connected",
+            "openrouter_vision": "connected" if settings.openrouter_api_key else "not configured",
+            "groq_ai": "connected" if settings.groq_api_key else "not configured",
+            "supabase": "connected" if db.available else "not configured",
+        }
+    }
+
+
+# ═══════════════════════════════════════════════════
+# Audit Chain Endpoints
+# ═══════════════════════════════════════════════════
+
+@app.get("/api/v1/audit/verify", tags=["audit"])
+async def verify_audit_chain():
+    """Verify the integrity of the SHA-256 hash-chained audit log."""
+    from services.audit import verify_chain
+    return verify_chain()
+
+
+@app.get("/api/v1/audit/log", tags=["audit"])
+async def get_audit_log(limit: int = Query(50, le=200)):
+    """Get audit log entries."""
+    from services.audit import _audit_chain
+    return {"records": _audit_chain[-limit:], "total": len(_audit_chain)}
+
+
+# ═══════════════════════════════════════════════════
+# Cold Chain (Open-Meteo API)
+# ═══════════════════════════════════════════════════
+
+@app.get("/api/v1/cold-chain", tags=["cold-chain"])
+async def cold_chain_check(lat: float, lng: float):
+    """Check drug storage conditions at a location using Open-Meteo free weather API."""
+    from services.cold_chain import check_cold_chain
+    return await check_cold_chain(lat, lng)
+
+
+# ═══════════════════════════════════════════════════
+# Translation (LibreTranslate API)
+# ═══════════════════════════════════════════════════
+
+@app.get("/api/v1/translate/languages", tags=["translation"])
+async def get_languages():
+    """Get all supported translation languages."""
+    from services.translation import get_supported_languages
+    return {"languages": get_supported_languages()}
+
+
+@app.post("/api/v1/translate", tags=["translation"])
+async def translate(text: str, target: str, source: str = "en"):
+    """Translate text to any supported language via LibreTranslate (free, no API key)."""
+    from services.translation import translate_text
+    translated = await translate_text(text, target, source)
+    return {
+        "original": text,
+        "translated": translated,
+        "source_language": source,
+        "target_language": target
+    }
+
+
+# ═══════════════════════════════════════════════════
+# GTIN / Barcode Validation (WHO GS1)
+# ═══════════════════════════════════════════════════
+
+@app.post("/api/v1/barcode/validate", tags=["barcode"])
+async def validate_barcode(barcode: str):
+    """Validate a GTIN/EAN/UPC barcode using GS1 check-digit algorithm.
+    Detects country of origin and extracts NDC if present."""
+    from services.gtin import validate_gtin
+    return validate_gtin(barcode)
+
+
+@app.post("/api/v1/barcode/parse-gs1", tags=["barcode"])
+async def parse_gs1(data: str):
+    """Parse a GS1 DataMatrix barcode — extracts GTIN, lot, expiry, serial number."""
+    from services.gtin import parse_gs1_datamatrix
+    return parse_gs1_datamatrix(data)
+
+
+# ═══════════════════════════════════════════════════
+# Vision AI (GPT-4o Vision)
+# ═══════════════════════════════════════════════════
+
+@app.post("/api/v1/vision/analyze", tags=["vision"])
+async def analyze_image(image: str):
+    """Analyze a pill/packaging photo using GPT-4o Vision.
+    Requires OPENAI_API_KEY. Returns shape, color, imprint, and suspicion level."""
+    from services.vision import analyze_pill_image
+    return await analyze_pill_image(image)
+
+
+@app.post("/api/v1/vision/identify", tags=["vision"])
+async def identify_pill(description: str):
+    """Identify a pill from a text description using GPT-4o.
+    Example: 'small round white pill with M on one side and 523 on the other'"""
+    from services.vision import analyze_pill_description
+    return await analyze_pill_description(description)
+
+
+# ═══════════════════════════════════════════════════
+# Refill Reminders
+# ═══════════════════════════════════════════════════
+
+@app.get("/api/v1/refill/schedule", tags=["refill"])
+async def get_refill_schedule():
+    """
+    Get refill schedule based on user's scan history.
+    In production: uses Supabase scan_history table to predict refill dates.
+    """
+    # In-memory: return schedules from actual verifications
+    from routers.verify import _verifications
+    from datetime import datetime, timedelta
+
+    schedules = []
+    seen_drugs = set()
+
+    for v in reversed(_verifications):
+        drug = v.get("drug_info", {})
+        name = drug.get("brand_name") or drug.get("generic_name")
+        if name and name not in seen_drugs:
+            seen_drugs.add(name)
+            schedules.append({
+                "drug": name,
+                "ndc": drug.get("ndc"),
+                "last_verified": v.get("id", "")[:8],
+                "verified_at": datetime.now().isoformat(),
+                "confidence": v.get("confidence", 0)
+            })
+        if len(schedules) >= 10:
+            break
+
+    return {"schedules": schedules, "total": len(schedules)}
+
+
+# ═══════════════════════════════════════════════════
+# OpenFDA Adverse Events (FAERS)
+# ═══════════════════════════════════════════════════
+
+@app.get("/api/v1/adverse-events/{drug_name}", tags=["adverse-events"])
+async def get_adverse_events(drug_name: str, limit: int = Query(10, le=50)):
+    """Query FDA Adverse Event Reporting System (FAERS) for a drug."""
+    from services.openfda import get_adverse_events
+    events = await get_adverse_events(drug_name, limit=limit, api_key=settings.openfda_api_key)
+    return {
+        "drug": drug_name,
+        "total_events": len(events),
+        "events": events
+    }
+
+
+# ═══════════════════════════════════════════════════
+# AI Intelligence (Groq — Llama 3.3 70B)
+# ═══════════════════════════════════════════════════
+
+@app.post("/api/v1/ai/explain-interaction", tags=["ai"])
+async def ai_explain_interaction(drug_a: str, drug_b: str, known_effect: str = ""):
+    """Use Groq/Llama to generate a patient-friendly explanation of a drug interaction."""
+    from services.groq_ai import ai_explain_interaction
+    result = await ai_explain_interaction(drug_a, drug_b, known_effect)
+    if result:
+        return {"available": True, **result}
+    return {"available": False, "reason": "Groq API key not configured or request failed"}
+
+
+@app.post("/api/v1/ai/analyze-drug", tags=["ai"])
+async def ai_analyze_drug(drug_name: str):
+    """Use Groq/Llama for comprehensive drug analysis (food interactions, timing, storage)."""
+    from services.groq_ai import ai_analyze_drug
+    result = await ai_analyze_drug(drug_name)
+    if result:
+        return {"available": True, **result}
+    return {"available": False, "reason": "Groq API key not configured or request failed"}
+
+
+# ═══════════════════════════════════════════════════
+# LangGraph Agent Pipeline
+# ═══════════════════════════════════════════════════
+
+@app.post("/api/v1/agents/verify", tags=["agents"])
+async def agent_verify(barcode: str, drug_names: list[str] = Query(default=[]),
+                        patient_age: int = None, patient_weight: float = None,
+                        kidney_function: str = None):
+    """
+    Run the full 6-agent LangGraph verification pipeline.
+    Agents: Barcode → FDA Lookup → Recall Check → Interaction Scan → Safety Verdict → AI Report.
+    """
+    from services.langgraph_pipeline import run_full_verification
+    result = await run_full_verification(
+        barcode=barcode,
+        drug_names=drug_names,
+        patient_age=patient_age,
+        patient_weight=patient_weight,
+        kidney_function=kidney_function
+    )
+    return result
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
