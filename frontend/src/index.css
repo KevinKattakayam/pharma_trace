@@ -236,7 +236,7 @@ h1, .section-header { font-size: 24px; font-weight: 600; color: var(--text-main)
 
 /* Result Sheet */
 .result-sheet {
-  position: absolute; bottom: 0; left: 0; right: 0;
+  position: fixed; bottom: 0; left: 0; right: 0;
   background: var(--bg-surface);
   border-radius: 24px 24px 0 0;
   padding: 2rem 1.5rem calc(env(safe-area-inset-bottom, 0) + 1.5rem);

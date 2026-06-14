@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import api from '../utils/api';
 import { useVoice } from '../hooks/useVoice';
 import AudioPlayback from '../components/AudioPlayback';
@@ -284,8 +284,6 @@ export default function PrescriptionSummary() {
               <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '1.25rem' }}>
                 <AudioPlayback audioScript={result.audio_script} language={result.language} />
               </div>
-            )}
-
             )}
 
             <div style={{ marginBottom: '1.25rem' }}>

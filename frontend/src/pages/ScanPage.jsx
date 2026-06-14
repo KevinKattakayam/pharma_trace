@@ -136,7 +136,7 @@ export default function ScanPage() {
             Verify Medicine
           </h1>
           <p style={{ color: 'var(--text-2)', fontSize: '0.9375rem', maxWidth: 480, margin: '0 auto' }}>
-            Scan a barcode, photograph the packaging, or enter the NDC code manually.
+            Scan a barcode, photograph the packaging, or search by drug name, batch number, or barcode.
           </p>
         </div>
 
@@ -164,9 +164,9 @@ export default function ScanPage() {
         {loading && (
           <div className="card anim" style={{ textAlign: 'center', padding: '4rem 2rem', maxWidth: 480, margin: '0 auto' }}>
             <div className="spinner" style={{ margin: '0 auto 1.25rem', width: 36, height: 36 }} />
-            <h3 style={{ fontWeight: 800, fontSize: '1.1rem', marginBottom: '.5rem' }}>Querying FDA databases...</h3>
+            <h3 style={{ fontWeight: 800, fontSize: '1.1rem', marginBottom: '.5rem' }}>Verifying medicine...</h3>
             <div style={{ display: 'flex', gap: '.5rem', justifyContent: 'center', flexWrap: 'wrap' }}>
-              {['NDC registry', 'Recall database', 'Cold chain'].map(s => (
+              {['Drug registry', 'Recall database', 'Safety check'].map(s => (
                 <span key={s} style={{ fontSize: '.7rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.08em', color: 'var(--text-3)', padding: '.3rem .65rem', background: 'var(--bg-tertiary)', borderRadius: 8, border: '1px solid var(--border-1)' }}>{s}</span>
               ))}
             </div>

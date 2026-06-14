@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { NavLink } from 'react-router-dom';
+import { NavLink, useNavigate } from 'react-router-dom';
 
 const Icons = {
   home: <svg viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>,
@@ -43,6 +43,7 @@ const toolsMenu = [
 
 export default function Navbar() {
   const [menuOpen, setMenuOpen] = useState(false);
+  const navigate = useNavigate();
 
   return (
     <>
@@ -65,22 +66,24 @@ export default function Navbar() {
         </div>
         <div>
           {toolsMenu.map(item => (
-            <NavLink
+            <div
               key={item.path}
-              to={item.path}
-              onClick={() => setMenuOpen(false)}
+              onClick={() => {
+                 setMenuOpen(false);
+                 navigate(item.path);
+              }}
               style={{
                 display: 'flex', alignItems: 'center', gap: '0.75rem',
                 padding: '1rem', borderRadius: '12px',
                 color: 'var(--text-main)', fontSize: '15px', fontWeight: 500,
                 marginBottom: '0.5rem', background: 'var(--bg-secondary)',
-                textDecoration: 'none'
+                cursor: 'pointer'
               }}
             >
               <span style={{ color: 'var(--primary)', width: 24, height: 24, display: 'flex' }}>{Icons[item.icon]}</span>
               {item.label}
               {item.enterprise && <span className="verdict-badge verdict-badge--genuine" style={{ marginLeft: 'auto', fontSize: '10px' }}>B2B</span>}
-            </NavLink>
+            </div>
           ))}
         </div>
       </div>
