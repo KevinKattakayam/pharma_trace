@@ -199,93 +199,51 @@ export default function Scanner({ onBarcodeScan, onImageCapture, onManualEntry, 
            <button onClick={() => setPersistenceFailed(false)} style={{ background: 'transparent', border: 'none', color: 'var(--warn)', cursor: 'pointer', fontWeight: 'bold' }}>×</button>
         </div>
       )}
-      {/* Precision Mode Selector */}
-      <div style={{ 
-        display: 'flex', background: 'var(--bg-tertiary)', 
-        padding: '4px', borderRadius: '14px', marginBottom: '2rem',
-        border: '1px solid var(--border-1)', maxWidth: '400px', margin: '0 auto 2.5rem'
-      }}>
-        {modes.map(m => (
-          <button key={m.key}
-            onClick={() => { 
-              setMode(m.key); 
-              if (m.key !== 'manual' && !isScanning) startCamera(); 
-              if (m.key === 'manual') stopCamera(); 
-            }}
-            style={{
-              flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem',
-              padding: '0.75rem 0.5rem', borderRadius: '10px', fontSize: '0.75rem', fontWeight: 700,
-              color: mode === m.key ? '#fff' : 'var(--text-3)',
-              background: mode === m.key ? 'var(--accent)' : 'transparent',
-              transition: 'all 0.3s var(--ease)',
-              boxShadow: mode === m.key ? 'var(--shadow-md)' : 'none'
-            }}>
-            {m.icon}
-            <span style={{ display: mode === m.key ? 'inline' : 'none' }}>{m.label}</span>
-          </button>
-        ))}
-      </div>
 
-      {/* Clinical Viewport */}
+      {/* Clinical Viewport (Full Screen) */}
       {mode !== 'manual' && (
-        <div style={{ position: 'relative' }}>
-          <div className="scanner" id="scanner-viewport">
-            <video ref={videoRef} className="scanner__video" autoPlay playsInline muted />
-            <div className="scanner__overlay">
-              <div className="scanner__frame">
-                <span className="scanner__corner scanner__corner--tl" />
-                <span className="scanner__corner scanner__corner--tr" />
-                <span className="scanner__corner scanner__corner--bl" />
-                <span className="scanner__corner scanner__corner--br" />
-                
-                {/* Visual AI Indicators */}
-                <div style={{
-                  position: 'absolute', top: '-40px', left: '50%', transform: 'translateX(-50%)',
-                  whiteSpace: 'nowrap', fontSize: '0.625rem', fontWeight: 800, color: 'var(--accent)',
-                  textTransform: 'uppercase', letterSpacing: '0.15em', display: 'flex', alignItems: 'center', gap: '0.5rem'
-                }}>
-                  <span className="hero__tag-dot" /> AI Recognition Active
-                </div>
-              </div>
-              {isAwaitingExpiry && (
-                <div className="anim" style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.85)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: '#fff', zIndex: 20, padding: '2rem', textAlign: 'center' }}>
-                   <div style={{ fontSize: '3.5rem', marginBottom: '1rem', animation: 'bounce 1s infinite' }}>📅</div>
-                   <h3 style={{ fontSize: '1.5rem', fontWeight: 900, marginBottom: '0.5rem', color: 'var(--safe)' }}>Barcode Captured!</h3>
-                   <p style={{ fontSize: '1rem', fontWeight: 600, color: 'var(--text-inv)' }}>Now show the expiry date...</p>
-                </div>
-              )}
-            </div>
-            
-            <div className="scanner__status">
-              {isScanning ? (
-                <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <span className="spinner" style={{ width: 12, height: 12, borderWidth: 1.5 }} />
-                  {mode === 'barcode' ? 'Align barcode with center line' : 'Capture clear packaging photo'}
-                </span>
-              ) : 'Adjusting optics…'}
-            </div>
+        <div className="scanner-fullscreen">
+          <video ref={videoRef} className="scanner-fullscreen__video" autoPlay playsInline muted />
+          
+          <div className="scanner-fullscreen__overlay">
+            <div className="scanner-fullscreen__crop" />
           </div>
 
-          <div style={{ display: 'flex', justifyContent: 'center', gap: '1rem', marginTop: '2.5rem' }}>
+          <div style={{
+            position: 'absolute', top: '4rem', left: '0', right: '0', textAlign: 'center',
+            color: '#fff', fontSize: '15px', fontWeight: 600, zIndex: 201
+          }}>
             {isScanning ? (
-              <>
-                {mode === 'barcode' ? (
-                  <div style={{ textAlign: 'center', color: 'var(--text-3)', fontSize: '0.875rem' }}>
-                    Scanning for barcodes...
-                  </div>
-                ) : (
-                  <button className="btn btn--primary btn--lg"
-                    onClick={handleCapture}
-                    id="btn-capture-photo">
-                    Identify Package
-                  </button>
-                )}
-                <button className="btn btn--secondary" onClick={stopCamera} id="btn-stop-camera">Cancel</button>
-              </>
-            ) : (
-              !error && <button className="btn btn--primary btn--lg" onClick={startCamera}>Re-enable Optical Sensor</button>
-            )}
+              mode === 'barcode' ? 'Align barcode with crop guide' : 'Capture clear packaging photo'
+            ) : 'Adjusting optics…'}
           </div>
+
+          {/* Close / Mode Switcher Overlay */}
+          <button className="scanner-fullscreen__close" onClick={() => { setMode('manual'); stopCamera(); }}>
+            <svg viewBox="0 0 24 24" width="24" height="24" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+
+          {/* Capture Controls Overlay */}
+          {isScanning && mode === 'photo' && (
+            <div style={{ position: 'absolute', bottom: '4rem', left: '0', right: '0', display: 'flex', justifyContent: 'center', zIndex: 201 }}>
+              <button 
+                onClick={handleCapture}
+                style={{
+                  width: '72px', height: '72px', borderRadius: '50%', background: '#fff',
+                  border: '4px solid rgba(255,255,255,0.4)', backgroundClip: 'padding-box',
+                  boxShadow: '0 4px 12px rgba(0,0,0,0.3)'
+                }}
+              />
+            </div>
+          )}
+          
+          {isAwaitingExpiry && (
+             <div className="anim" style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.85)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: '#fff', zIndex: 202, padding: '2rem', textAlign: 'center' }}>
+                <svg viewBox="0 0 24 24" width="48" height="48" stroke="var(--primary)" strokeWidth="2" fill="none" style={{marginBottom: '1rem'}}><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+                <h3 style={{ fontSize: '24px', fontWeight: 700, marginBottom: '0.5rem', color: 'var(--text-inv)' }}>Barcode Captured!</h3>
+                <p style={{ fontSize: '15px', color: 'var(--text-muted)' }}>Now show the expiry date...</p>
+             </div>
+          )}
         </div>
       )}
 
@@ -295,8 +253,8 @@ export default function Scanner({ onBarcodeScan, onImageCapture, onManualEntry, 
           <form onSubmit={handleManualSubmit}>
             <div className="form-group" style={{ marginBottom: '1.5rem' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
-                <label className="form-label" htmlFor="manual-barcode">Direct NDC Entry</label>
-                <span style={{ fontSize: '0.625rem', fontWeight: 700, color: 'var(--text-3)' }}>10 Digits</span>
+                <label className="label-text" htmlFor="manual-barcode">Direct NDC Entry</label>
+                <span className="label-text">10 Digits</span>
               </div>
               <input 
                 id="manual-barcode" 
@@ -304,15 +262,14 @@ export default function Scanner({ onBarcodeScan, onImageCapture, onManualEntry, 
                 value={manualBarcode} 
                 onChange={(e) => setManualBarcode(e.target.value)}
                 placeholder="XXXXX-XXX-XX" 
-                style={{ fontSize: '1.125rem', fontWeight: 600, letterSpacing: '0.05em', textAlign: 'center' }}
+                style={{ fontSize: '18px', fontWeight: 600, letterSpacing: '0.05em', textAlign: 'center' }}
                 autoComplete="off" 
                 autoFocus 
               />
             </div>
             <button 
               type="submit" 
-              className="btn btn--primary btn--lg" 
-              style={{ width: '100%' }} 
+              className="btn btn--primary" 
               disabled={!manualBarcode.trim()} 
               id="btn-manual-verify"
             >
@@ -320,28 +277,17 @@ export default function Scanner({ onBarcodeScan, onImageCapture, onManualEntry, 
             </button>
           </form>
 
-          <div style={{
-            marginTop: '2rem', padding: '1.25rem', background: 'var(--bg-primary)',
-            borderRadius: '16px', border: '1px solid var(--border-2)', position: 'relative'
-          }}>
-            <div style={{ 
-              position: 'absolute', top: '-10px', left: '20px', background: 'var(--bg-primary)',
-              padding: '0 8px', fontSize: '0.625rem', fontWeight: 800, color: 'var(--accent)',
-              textTransform: 'uppercase', letterSpacing: '0.1em'
-            }}>
-              Sandbox Mode
-            </div>
-            <p style={{ fontSize: '0.8125rem', color: 'var(--text-2)', lineHeight: 1.6 }}>
-              Use <span style={{ fontFamily: 'var(--mono)', color: 'var(--accent)', fontWeight: 700 }}>59726-065-30</span> for a clinical-grade verification demonstration.
+          <div style={{ marginTop: '2rem', padding: '1rem', background: 'var(--bg-secondary)', borderRadius: '12px' }}>
+            <p style={{ fontSize: '13px', color: 'var(--text-muted)' }}>
+              Sandbox Mode: Use <span style={{ fontFamily: 'var(--font-primary)', color: 'var(--primary)', fontWeight: 600 }}>59726-065-30</span> for a clinical-grade verification demonstration.
             </p>
           </div>
         </div>
       )}
 
       {error && (
-        <div className="card card--danger anim" style={{ maxWidth: 420, margin: '2rem auto 0', textAlign: 'center' }}>
-          <div style={{ fontSize: '1.25rem', marginBottom: '0.5rem' }}>⚠️</div>
-          <p style={{ color: 'var(--danger)', fontSize: '0.875rem', fontWeight: 600, marginBottom: '1rem' }}>{error}</p>
+        <div className="card anim" style={{ maxWidth: 420, margin: '1rem auto 0', textAlign: 'center', border: '1px solid var(--danger-red)' }}>
+          <p style={{ color: 'var(--danger-red)', fontSize: '15px', fontWeight: 600, marginBottom: '1rem' }}>{error}</p>
           <button className="btn btn--secondary" onClick={startCamera}>Retry Connection</button>
         </div>
       )}
