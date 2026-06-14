@@ -37,15 +37,29 @@ class RiskLevel(str, Enum):
 class BarcodeVerifyRequest(BaseModel):
     barcode: str
     location: Optional[dict] = None
+    source: Optional[str] = "live"
+    verified_at: Optional[str] = None
 
 
 class ImageVerifyRequest(BaseModel):
     image: str  # base64 encoded
+    extracted_text: Optional[str] = None
     location: Optional[dict] = None
+    source: Optional[str] = "live"
+    verified_at: Optional[str] = None
 
 
 class InteractionCheckRequest(BaseModel):
     drugs: list[str] = Field(..., min_length=2, max_length=10)
+
+
+class InteractionsPhotoRequest(BaseModel):
+    image: str  # base64 encoded photo of multiple medicines
+
+
+class SymptomSafetyRequest(BaseModel):
+    symptoms: str
+    current_medications: list[str]
 
 
 class DosageRequest(BaseModel):
@@ -108,6 +122,10 @@ class VerificationResponse(BaseModel):
     evidence: list[EvidenceItem] = []
     side_effects: list[SideEffect] = []
     audit_hash: Optional[str] = None
+    identification_source: Optional[str] = None
+    expiry_info: Optional[dict] = None
+    shortage: Optional[dict] = None
+    ai_generated: bool = False
 
 
 class DrugInteraction(BaseModel):
@@ -126,6 +144,7 @@ class InteractionResponse(BaseModel):
     drug_names: list[str]
     interactions: list[DrugInteraction]
     matrix: list[list[str]]  # severity grid
+    ai_generated: bool = False
 
 
 class DosageAdvice(BaseModel):

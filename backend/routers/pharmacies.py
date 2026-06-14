@@ -25,40 +25,107 @@ def _haversine_km(lat1, lng1, lat2, lng2):
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
-def _compute_trust_score(pharmacy_id: str) -> dict:
-    """Compute anti-gaming trust score from real review and verification data."""
-    pharmacy = next((p for p in _pharmacies if p["id"] == pharmacy_id), None)
-    if not pharmacy:
-        return {}
-
-    reviews = [r for r in _reviews if r["pharmacy_id"] == pharmacy_id]
-    total_reviews = len(reviews)
-    avg_rating = sum(r["rating"] for r in reviews) / max(total_reviews, 1)
-
-    # Anti-gaming: detect review bursts (many reviews in short timeframe)
-    flagged = sum(1 for r in reviews if r.get("flagged", False))
-
-    # Compute trust components
-    review_score = min(avg_rating * 20, 100) if total_reviews > 0 else 50  # default 50 for no reviews
-    verification_score = pharmacy.get("verification_pass_rate", 50)
-    report_penalty = min(pharmacy.get("suspicious_reports", 0) * 15, 60)
-    burst_penalty = min(flagged * 20, 40)
-
-    trust_score = max(0, min(100, (
-        review_score * 0.3 +
-        verification_score * 0.4 +
-        50 * 0.3  # account age baseline
-        - report_penalty - burst_penalty
-    )))
-
+async def _compute_trust_score(pharmacy_id: str) -> dict:
+    """Compute anti-gaming trust score from real review and verification data in Supabase."""
+    from services.supabase import get_supabase
+    import math
+    from datetime import datetime, timezone, timedelta
+    import asyncio
+    db = get_supabase()
+    
+    if not db.available:
+        return {"trust_score": None, "trust_breakdown": None}
+        
+    reviews = await db.query("pharmacy_reviews", filters={"pharmacy_id": pharmacy_id}, limit=500)
+    if not reviews:
+        reviews = []
+        
+    # Sort reviews by created_at ascending for burst detection
+    reviews = sorted(reviews, key=lambda x: x.get("created_at", ""))
+        
+    now = datetime.now(timezone.utc)
+    valid_reviews = []
+    flagged_reviews_to_insert = []
+    
+    for r in reviews:
+        suspicious = False
+        reason = ""
+        
+        user_id = r.get("user_id")
+        if user_id:
+            user_verifs = await db.query("safety_check_log", filters={"user_id": user_id}, limit=3)
+            if len(user_verifs) < 3:
+                suspicious = True
+                reason = "Low account history (<3 verifications)"
+                
+        r_time_str = r.get("created_at")
+        if r_time_str and not suspicious:
+            try:
+                r_dt = datetime.fromisoformat(r_time_str.replace("Z", "+00:00"))
+                window_start = r_dt - timedelta(hours=1)
+                burst_count = 0
+                for prev in valid_reviews[-10:]:
+                    if prev.get("created_at"):
+                        p_dt = datetime.fromisoformat(prev["created_at"].replace("Z", "+00:00"))
+                        if p_dt > window_start:
+                            burst_count += 1
+                if burst_count >= 5:
+                    suspicious = True
+                    reason = "Review burst (>5 in 1 hour)"
+            except ValueError:
+                pass
+                
+        if suspicious:
+            if not r.get("flagged"):
+                flagged_reviews_to_insert.append({
+                    "review_id": r.get("id"),
+                    "pharmacy_id": pharmacy_id,
+                    "reason": reason,
+                    "flagged_at": now.isoformat()
+                })
+        else:
+            valid_reviews.append(r)
+            
+    if flagged_reviews_to_insert:
+        try:
+            asyncio.create_task(db.insert_many("flagged_reviews", flagged_reviews_to_insert))
+        except Exception: pass
+        
+    local_verifications = await db.query("safety_check_log", filters={"pharmacy_id": pharmacy_id}, limit=100)
+    pass_rate_score = 0
+    if local_verifications:
+        passed = sum(1 for v in local_verifications if v.get("verdict") == "authentic")
+        pass_rate_score = (passed / len(local_verifications)) * 50
+        
+    review_score = min(math.log10(max(len(valid_reviews), 1)) * 15, 30)
+    
+    recency_boost = 0
+    last_activity = None
+    if valid_reviews:
+        r_str = valid_reviews[-1].get("created_at")
+        if r_str: last_activity = datetime.fromisoformat(r_str.replace("Z", "+00:00"))
+    if local_verifications:
+        v_str = local_verifications[0].get("created_at")
+        if v_str:
+            v_dt = datetime.fromisoformat(v_str.replace("Z", "+00:00"))
+            if not last_activity or v_dt > last_activity:
+                last_activity = v_dt
+                
+    if last_activity:
+        days_since = (now - last_activity).days
+        if days_since <= 14:
+            recency_boost = 20 * (1 - (days_since / 14))
+            
+    trust_score = pass_rate_score + review_score + recency_boost
+    
     return {
         "trust_score": round(trust_score, 1),
         "trust_breakdown": {
-            "review_sentiment": round(review_score, 1),
-            "verification_pass_rate": verification_score,
-            "report_penalty": report_penalty,
-            "burst_detection": "detected" if flagged > 0 else "none",
-            "total_reviews": total_reviews
+            "pass_rate_score": round(pass_rate_score, 1),
+            "review_volume_score": round(review_score, 1),
+            "recency_boost": round(recency_boost, 1),
+            "valid_reviews": len(valid_reviews),
+            "flagged_reviews": len(reviews) - len(valid_reviews)
         }
     }
 
@@ -76,7 +143,7 @@ async def get_nearby_pharmacies(lat: float = 19.076, lng: float = 72.877, radius
     for p in _pharmacies:
         dist = _haversine_km(lat, lng, p.get("lat", 0), p.get("lng", 0))
         if dist <= radius_km:
-            trust = _compute_trust_score(p["id"])
+            trust = await _compute_trust_score(p["id"])
             nearby.append({
                 **p,
                 "distance_m": round(dist * 1000),
@@ -101,7 +168,10 @@ async def register_pharmacy(name: str, address: str, lat: float, lng: float,
         "country": country,
         "total_verifications": 0,
         "verification_pass_rate": 50,
-        "suspicious_reports": 0
+        "suspicious_reports": 0,
+        "is_claimed": False,
+        "verified_inventory": [],
+        "contact_number": None
     }
     _pharmacies.append(pharmacy)
     return {"pharmacy": pharmacy, "status": "registered"}
@@ -114,8 +184,67 @@ async def get_trust_score(pharmacy_id: str):
     if not pharmacy:
         raise HTTPException(status_code=404, detail="Pharmacy not found. Register it first via POST /pharmacies/register")
 
-    trust = _compute_trust_score(pharmacy_id)
+    trust = await _compute_trust_score(pharmacy_id)
     return {**pharmacy, **trust}
+
+@router.post("/{pharmacy_id}/claim")
+async def claim_pharmacy(pharmacy_id: str, contact_number: str, license_number: str = ""):
+    """
+    Request to claim a pharmacy listing.
+    Creates a pending claim that must be verified by a clinic admin before going live.
+    """
+    pharmacy = next((p for p in _pharmacies if p["id"] == pharmacy_id), None)
+    if not pharmacy:
+        raise HTTPException(status_code=404, detail="Pharmacy not found")
+        
+    claim_status = pharmacy.get("claim_status")
+    if claim_status == "verified":
+        raise HTTPException(status_code=400, detail="Pharmacy is already claimed and verified")
+    if claim_status == "pending":
+        raise HTTPException(status_code=400, detail="A claim is already pending review for this pharmacy")
+
+    pharmacy["claim_status"] = "pending"
+    pharmacy["contact_number"] = contact_number
+    pharmacy["license_number"] = license_number
+    pharmacy["is_claimed"] = False  # Not yet — stays false until admin verifies
+
+    return {
+        "status": "pending",
+        "message": "Claim submitted for verification. A clinic administrator will review your license and contact details before the listing goes live.",
+        "pharmacy_id": pharmacy_id
+    }
+
+
+@router.post("/{pharmacy_id}/verify-claim")
+async def verify_claim(pharmacy_id: str):
+    """
+    Admin-only: Approve a pending pharmacy claim.
+    In production this must be gated behind Depends(get_current_user) with admin role check.
+    """
+    pharmacy = next((p for p in _pharmacies if p["id"] == pharmacy_id), None)
+    if not pharmacy:
+        raise HTTPException(status_code=404, detail="Pharmacy not found")
+
+    if pharmacy.get("claim_status") != "pending":
+        raise HTTPException(status_code=400, detail="No pending claim to verify")
+
+    pharmacy["claim_status"] = "verified"
+    pharmacy["is_claimed"] = True
+    return {"status": "verified", "pharmacy": pharmacy}
+
+
+@router.put("/{pharmacy_id}/inventory")
+async def update_inventory(pharmacy_id: str, inventory: list[dict]):
+    """Publish verified medicine inventory to the directory."""
+    pharmacy = next((p for p in _pharmacies if p["id"] == pharmacy_id), None)
+    if not pharmacy:
+        raise HTTPException(status_code=404, detail="Pharmacy not found")
+        
+    if pharmacy.get("claim_status") != "verified":
+        raise HTTPException(status_code=403, detail="Pharmacy must be claimed and verified before updating inventory")
+        
+    pharmacy["verified_inventory"] = inventory
+    return {"status": "inventory_updated", "inventory_count": len(inventory)}
 
 
 @router.post("/{pharmacy_id}/review")

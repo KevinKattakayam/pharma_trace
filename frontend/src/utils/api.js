@@ -214,6 +214,17 @@ class ApiClient {
     return this.request('/refill/schedule');
   }
 
+  async getPushPublicKey() {
+    return this.request('/push/public-key');
+  }
+
+  async subscribePush(subscriptionData) {
+    return this.request('/push/subscribe', {
+      method: 'POST',
+      body: JSON.stringify(subscriptionData)
+    });
+  }
+
   // ═══════════════════════════════════════════════
   // Batch Verification (Health Workers)
   // ═══════════════════════════════════════════════
@@ -301,7 +312,104 @@ class ApiClient {
     const params = new URLSearchParams({ drug_name: drugName, ndc, confidence: String(confidence) });
     return this.request(`/caregiver/recipient/${code}/medication?${params}`, { method: 'POST' });
   }
+  // ═══════════════════════════════════════════════
+  // Family Cabinet
+  // ═══════════════════════════════════════════════
+
+  async addFamilyMember(data) {
+    return this.request('/cabinet/members', { method: 'POST', body: JSON.stringify(data) });
+  }
+
+  async getFamilyMembers(userId) {
+    return this.request(`/cabinet/members/${userId}`);
+  }
+
+  async addCabinetMedicine(data) {
+    return this.request('/cabinet/add', { method: 'POST', body: JSON.stringify(data) });
+  }
+
+  async getCabinetMedicines(userId) {
+    return this.request(`/cabinet/list/${userId}`);
+  }
+
+  async checkMedicineSafety(medicineName, memberId) {
+    return this.request(`/cabinet/check/${encodeURIComponent(medicineName)}/${memberId}`);
+  }
+
+  // ═══════════════════════════════════════════════
+  // Doctor Visit Summarizer
+  // ═══════════════════════════════════════════════
+
+  async extractPrescriptionImage(imageBase64) {
+    return this.request('/prescription/extract-image', {
+      method: 'POST',
+      body: JSON.stringify({ image: imageBase64 })
+    });
+  }
+
+  async summarizePrescription(data) {
+    return this.request('/prescription/summarize', { method: 'POST', body: JSON.stringify(data) });
+  }
+
+  // ═══════════════════════════════════════════════
+  // Enterprise: Clinic Admin
+  // ═══════════════════════════════════════════════
+
+  setToken(token) {
+    this.token = token;
+    localStorage.setItem('pharmatrace_token', token);
+  }
+
+  async loginClinic(clinicId) {
+    return this.request('/clinic/login', { method: 'POST', body: JSON.stringify({ clinic_id: clinicId }) });
+  }
+
+  async createClinic(data) {
+    return this.request('/clinic/create', { method: 'POST', body: JSON.stringify(data) });
+  }
+
+  async getClinicDashboard(clinicId) {
+    return this.request(`/clinic/${clinicId}/dashboard`);
+  }
+
+  async getClinicWorkers(clinicId) {
+    return this.request(`/clinic/${clinicId}/workers`);
+  }
+
+  // ═══════════════════════════════════════════════
+  // Enterprise: Audit Export
+  // ═══════════════════════════════════════════════
+
+  async downloadAuditExport(format = 'csv', startDate = '', endDate = '', clinicId = '') {
+    const params = new URLSearchParams({ format });
+    if (startDate) params.set('start_date', startDate);
+    if (endDate) params.set('end_date', endDate);
+    if (clinicId) params.set('clinic_id', clinicId);
+
+    const headers = {};
+    if (this.token) headers['Authorization'] = `Bearer ${this.token}`;
+
+    const response = await fetch(`${this.base}/audit/export?${params}`, { headers });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ detail: 'Network error' }));
+      throw new Error(error.detail || `HTTP ${response.status}`);
+    }
+    return response.blob();
+  }
+
+  // ═══════════════════════════════════════════════
+  // Enterprise: PvPI Adverse Event Reporting
+  // ═══════════════════════════════════════════════
+
+  async prefillPvpiReport(data) {
+    return this.request('/pvpi/prefill-report', { method: 'POST', body: JSON.stringify(data) });
+  }
+
+  async getPvpiReportStatus(verificationId) {
+    return this.request(`/pvpi/report-status/${verificationId}`);
+  }
 }
 
 export const api = new ApiClient();
 export default api;
+

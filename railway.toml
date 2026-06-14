@@ -1,0 +1,3 @@
+[deploy]
+healthcheckTimeout = 120
+restartPolicyType = "on_failure"

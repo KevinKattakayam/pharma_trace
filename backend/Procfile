@@ -1,0 +1,3 @@
+web: uvicorn main:app --host 0.0.0.0 --port $PORT
+cdsco_scraper_cron: python scripts/scrape_cdsco_recalls.py
+refill_notifier_cron: python scripts/send_refill_notifications.py

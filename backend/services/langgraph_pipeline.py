@@ -85,13 +85,37 @@ async def fda_lookup_agent(state: DrugVerificationState) -> dict:
                 "drug_info": info,
                 "evidence": [{"agent": "fda_lookup", "check": "OpenFDA database",
                               "status": "pass",
-                              "detail": f"Found: {info.get('brand_name', 'Unknown')} ({info.get('generic_name', 'Unknown')}) by {info.get('manufacturer', 'Unknown')}"}]
+                              "detail": f"Found (US FDA): {info.get('brand_name', 'Unknown')} ({info.get('generic_name', 'Unknown')}) by {info.get('manufacturer', 'Unknown')}"}]
             }
         else:
+            # Fallback to Indian CDSCO database
+            from services.cdsco import lookup_indian_drug
+            from services.canonicalize import map_to_rxcui
+            
+            cdsco_info = await lookup_indian_drug(ndc_to_lookup)
+            
+            if cdsco_info:
+                # Canonicalize foreign generics to RxNorm for global interaction checks
+                generic = cdsco_info.get("generic_name", "")
+                if generic:
+                    mapping = await map_to_rxcui(generic)
+                    if mapping.get("rxcui"):
+                        cdsco_info["rxcui"] = mapping["rxcui"]
+
+                return {
+                    "fda_result": cdsco_info,
+                    "drug_info": cdsco_info,
+                    "evidence": [
+                        {"agent": "fda_lookup", "check": "OpenFDA database", "status": "fail", "detail": "Not found in US FDA database"},
+                        {"agent": "cdsco_lookup", "check": "CDSCO India database", "status": "pass", 
+                         "detail": f"Found (India CDSCO): {cdsco_info.get('brand_name', 'Unknown')} ({cdsco_info.get('generic_name', 'Unknown')}) by {cdsco_info.get('manufacturer', 'Unknown')}"}
+                    ]
+                }
+                
             return {
-                "evidence": [{"agent": "fda_lookup", "check": "OpenFDA database",
+                "evidence": [{"agent": "fda_lookup", "check": "OpenFDA & CDSCO databases",
                               "status": "fail",
-                              "detail": "Drug NOT found in FDA National Drug Code database"}]
+                              "detail": "Drug NOT found in US FDA or Indian CDSCO databases"}]
             }
     except Exception as e:
         return {"errors": [f"FDA lookup agent error: {str(e)}"]}
@@ -104,10 +128,14 @@ async def recall_agent(state: DrugVerificationState) -> dict:
         from config import get_settings
         settings = get_settings()
 
-        drug_info = state.get("drug_info", {})
+        # Use barcode or first drug name directly to allow parallel execution
+        drug_names = state.get("drug_names", [])
+        ndc = state.get("barcode")
+        drug_name = drug_names[0] if drug_names else None
+        
         recalls = await check_recalls(
-            ndc=drug_info.get("ndc"),
-            drug_name=drug_info.get("brand_name"),
+            ndc=ndc,
+            drug_name=drug_name,
             api_key=settings.openfda_api_key
         )
 
@@ -153,25 +181,47 @@ async def interaction_agent(state: DrugVerificationState) -> dict:
 async def safety_agent(state: DrugVerificationState) -> dict:
     """Agent 5: Compute overall safety verdict."""
     try:
+        from services.confidence import bayesian_confidence
         evidence = state.get("evidence", [])
-        passes = sum(1 for e in evidence if e.get("status") == "pass")
-        fails = sum(1 for e in evidence if e.get("status") == "fail")
-        total = len(evidence) if evidence else 1
+        
+        # Map agent outcomes to Bayesian likelihood keys
+        evidence_keys = []
+        for e in evidence:
+            agent = e.get("agent")
+            status = e.get("status")
+            if agent == "barcode" and status == "pass":
+                evidence_keys.append("gtin_valid")
+            if agent == "fda_lookup" and status == "pass":
+                evidence_keys.append("openfda_exact")
+            if agent == "cdsco_lookup" and status == "pass":
+                evidence_keys.append("cdsco_match")
+            if agent == "recall":
+                if status == "pass":
+                    evidence_keys.append("no_recall")
+                else:
+                    evidence_keys.append("active_recall")
 
-        if fails >= 2:
-            verdict = "counterfeit"
-            confidence = min(95.0, 50 + fails * 15)
-        elif fails == 1:
-            verdict = "suspicious"
-            confidence = 60.0
-        elif passes >= 3:
+        cold_chain = state.get("cold_chain")
+        if cold_chain:
+            if cold_chain.get("ok"):
+                evidence_keys.append("cold_chain_ok")
+            else:
+                evidence_keys.append("cold_chain_fail")
+
+        confidence = bayesian_confidence(evidence_keys)
+        
+        # Apply strict deduction for cold chain failure as well
+        if cold_chain and not cold_chain.get("ok"):
+            confidence = max(0, confidence - 15)
+        
+        if confidence >= 85:
             verdict = "authentic"
-            confidence = min(100.0, (passes / total) * 100)
+        elif confidence >= 60:
+            verdict = "suspicious"
         else:
-            verdict = "unknown"
-            confidence = 50.0
+            verdict = "counterfeit"
 
-        return {"verdict": verdict, "confidence": round(confidence, 1)}
+        return {"verdict": verdict, "confidence": confidence}
     except Exception as e:
         return {"verdict": "unknown", "confidence": 0.0, "errors": [f"Safety agent error: {str(e)}"]}
 
@@ -193,21 +243,46 @@ async def report_agent(state: DrugVerificationState) -> dict:
             "evidence_summary": evidence
         }
 
+        REPORTER_SCHEMA = """
+Respond ONLY with valid JSON matching this schema exactly:
+{
+  "verdict": "safe" | "warn" | "danger",
+  "confidence": <integer 0-100>,
+  "brand_name": <string>,
+  "generic_name": <string>,
+  "manufacturer": <string>,
+  "evidence": [{"source": <string>, "finding": <string>}],
+  "warnings": [{"severity": "mild"|"moderate"|"severe", "text": <string>}],
+  "patient_summary": <string, plain language, max 3 sentences>
+}
+No markdown, no preamble, just JSON.
+"""
+
         # Generate AI summary using Groq
+        import json
         from services.groq_ai import _groq_chat
         evidence_text = "\n".join(f"- [{e.get('status')}] {e.get('detail', '')}" for e in evidence)
         ai_result = await _groq_chat([
             {
                 "role": "system",
-                "content": "You are a drug safety analyst. Write a brief 2-3 sentence summary of the verification result for the patient. Be clear and direct. Return JSON: {\"summary\": \"...\"}"
+                "content": REPORTER_SCHEMA
             },
             {
                 "role": "user",
                 "content": f"Drug: {report['drug']} ({report['generic']})\nVerdict: {verdict} ({confidence}% confidence)\nEvidence:\n{evidence_text}"
             }
-        ], max_tokens=150)
+        ], max_tokens=300)
 
-        ai_summary = ai_result.get("summary", f"Verification complete: {verdict} ({confidence}% confidence)") if ai_result else f"Verification complete: {verdict} ({confidence}% confidence)"
+        if ai_result:
+            try:
+                # Assuming _groq_chat returns dict (it usually parses JSON if it can)
+                if isinstance(ai_result, str):
+                    ai_result = json.loads(ai_result)
+                report.update(ai_result)
+            except:
+                pass
+
+        ai_summary = report.get("patient_summary", f"Verification complete: {verdict} ({confidence}% confidence)")
 
         return {"report": report, "ai_summary": ai_summary}
     except Exception as e:
@@ -216,24 +291,42 @@ async def report_agent(state: DrugVerificationState) -> dict:
 
 # ── Build the LangGraph ──
 
+async def parallel_lookups_agent(state: DrugVerificationState) -> dict:
+    """Run Agents 2, 3, and 4 in parallel to minimize network latency."""
+    import asyncio
+    results = await asyncio.gather(
+        fda_lookup_agent(state),
+        recall_agent(state),
+        interaction_agent(state),
+        return_exceptions=True
+    )
+    
+    merged = {"evidence": [], "errors": []}
+    for r in results:
+        if isinstance(r, Exception):
+            merged["errors"].append(str(r))
+        elif isinstance(r, dict):
+            for k, v in r.items():
+                if k in ("evidence", "errors"):
+                    merged[k].extend(v)
+                else:
+                    merged[k] = v
+    return merged
+
 def build_verification_graph():
     """Build the 6-agent verification pipeline as a LangGraph StateGraph."""
     graph = StateGraph(DrugVerificationState)
 
     # Add nodes
     graph.add_node("barcode_agent", barcode_agent)
-    graph.add_node("fda_lookup_agent", fda_lookup_agent)
-    graph.add_node("recall_agent", recall_agent)
-    graph.add_node("interaction_agent", interaction_agent)
+    graph.add_node("parallel_lookups_agent", parallel_lookups_agent)
     graph.add_node("safety_agent", safety_agent)
     graph.add_node("report_agent", report_agent)
 
-    # Define edges (sequential pipeline)
+    # Define edges (parallel pipeline)
     graph.set_entry_point("barcode_agent")
-    graph.add_edge("barcode_agent", "fda_lookup_agent")
-    graph.add_edge("fda_lookup_agent", "recall_agent")
-    graph.add_edge("recall_agent", "interaction_agent")
-    graph.add_edge("interaction_agent", "safety_agent")
+    graph.add_edge("barcode_agent", "parallel_lookups_agent")
+    graph.add_edge("parallel_lookups_agent", "safety_agent")
     graph.add_edge("safety_agent", "report_agent")
     graph.add_edge("report_agent", END)
 
@@ -259,6 +352,53 @@ async def run_full_verification(barcode: str, drug_names: list[str] = None,
     Run the complete 6-agent verification pipeline.
     Returns final report with verdict, confidence, evidence trail, and AI summary.
     """
+    from services.lookup_orchestrator import parallel_lookup
+    from services.confidence import bayesian_confidence
+    from services.gtin import validate_gtin
+    
+    gtin_res = validate_gtin(barcode)
+    ndc = gtin_res.get("ndc_extracted") or barcode
+
+    l1_results = await parallel_lookup(ndc)
+
+    evidence_keys = []
+    if gtin_res.get("valid"):
+        evidence_keys.append("gtin_valid")
+
+    openfda_data = l1_results.get("openfda", {}).get("data")
+    if openfda_data:
+        evidence_keys.append("openfda_exact")
+
+    cdsco_data = l1_results.get("cdsco", {}).get("data")
+    if cdsco_data:
+        evidence_keys.append("cdsco_match")
+
+    recalls_data = l1_results.get("recalls", {}).get("data")
+    if recalls_data is not None:
+        if len(recalls_data) == 0:
+            evidence_keys.append("no_recall")
+        else:
+            evidence_keys.append("active_recall")
+
+    drugbank_data = l1_results.get("drugbank", {}).get("data")
+    if drugbank_data:
+        evidence_keys.append("drugbank_match")
+
+    score = bayesian_confidence(evidence_keys)
+
+    if score >= 85:
+        from services.openfda import extract_openfda_info
+        drug_info = extract_openfda_info(openfda_data) if openfda_data else cdsco_data
+        
+        return {
+            "verdict": "authentic",
+            "confidence": score,
+            "drug_info": drug_info,
+            "evidence": [{"source": "L1 Orchestrator", "detail": f"Fast-path cleared with {score}% bayesian confidence", "status": "pass"}],
+            "ai_report": f"Early verification cleared. Score: {score}%. Drug verified automatically.",
+            "early_exit": True
+        }
+
     graph = get_verification_graph()
 
     initial_state = {

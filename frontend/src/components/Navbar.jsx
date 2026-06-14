@@ -14,19 +14,21 @@ const Icons = {
   dosage: <svg viewBox="0 0 24 24"><path d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10z"/><path d="M12 6v6l4 2"/></svg>,
   generic: <svg viewBox="0 0 24 24"><path d="M19.5 12.572l-7.5 7.428-7.5-7.428A5 5 0 1112 6.006a5 5 0 017.5 6.572"/></svg>,
   sideeffect: <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>,
+  prescription: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M9 15h6M9 12h6M9 18h6"/></svg>,
   api: <svg viewBox="0 0 24 24"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>,
-  logo: <svg viewBox="0 0 28 28"><defs><linearGradient id="lg" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stopColor="#7c5cfc"/><stop offset="100%" stopColor="#3b82f6"/></linearGradient></defs><rect width="28" height="28" rx="7" fill="#111627"/><path d="M14 5v18M8 11h12M7 14.5h14" stroke="url(#lg)" strokeWidth="2.2" strokeLinecap="round"/><circle cx="14" cy="7" r="1.5" fill="#7c5cfc"/></svg>,
+  logo: <svg viewBox="0 0 28 28"><defs><linearGradient id="lg" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stopColor="#6c3cf5"/><stop offset="100%" stopColor="#2563eb"/></linearGradient><filter id="ds"><feDropShadow dx="0" dy="2" stdDeviation="4" floodColor="#0f172a" floodOpacity="0.1"/></filter></defs><rect width="28" height="28" rx="7" fill="#ffffff" filter="url(#ds)"/><path d="M14 5v18M8 11h12M7 14.5h14" stroke="url(#lg)" strokeWidth="2.2" strokeLinecap="round"/><circle cx="14" cy="7" r="1.5" fill="#6c3cf5"/></svg>,
 };
 
 const navItems = [
   { path: '/', icon: 'home', label: 'Home' },
   { path: '/scan', icon: 'scan', label: 'Scan' },
+  { path: '/prescription', icon: 'prescription', label: 'Summary' },
   { path: '/interactions', icon: 'interact', label: 'Check' },
-  { path: '/map', icon: 'map', label: 'Map' },
   { path: '/dashboard', icon: 'dashboard', label: 'Care' }
 ];
 
 const toolsMenu = [
+  { path: '/prescription', icon: 'prescription', label: 'Doctor Visit Summarizer' },
   { path: '/scan', icon: 'scan', label: 'Verify Medicine' },
   { path: '/interactions', icon: 'interact', label: 'Drug Interactions' },
   { path: '/side-effects', icon: 'sideeffect', label: 'Side Effect Explainer' },
@@ -36,6 +38,9 @@ const toolsMenu = [
   { path: '/map', icon: 'map', label: 'Outbreak Map' },
   { path: '/report', icon: 'report', label: 'Report Medicine' },
   { path: '/dashboard', icon: 'dashboard', label: 'Caregiver Mode' },
+  { path: '/cabinet', icon: 'interact', label: 'Family Medicine Box' },
+  { path: '/clinic', icon: 'dashboard', label: 'Clinic Admin', enterprise: true },
+  { path: '/adverse-event', icon: 'report', label: 'Report Adverse Event', enterprise: true },
   { path: '/api-docs', icon: 'api', label: 'API & SDK' },
 ];
 
@@ -91,6 +96,7 @@ export default function Navbar() {
               >
                 <span className="bottom-nav__icon" style={{ color: 'var(--accent)' }}>{Icons[item.icon]}</span>
                 {item.label}
+                {item.enterprise && <span style={{ marginLeft: 'auto', fontSize: '0.55rem', fontWeight: 800, padding: '2px 6px', borderRadius: '4px', background: 'linear-gradient(135deg, var(--accent), var(--accent-2))', color: '#fff', letterSpacing: '0.05em' }}>B2B</span>}
               </NavLink>
             ))}
           </div>

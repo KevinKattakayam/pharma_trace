@@ -29,7 +29,7 @@ class SupabaseClient:
             "Prefer": "return=representation"
         }
 
-    async def query(self, table: str, select: str = "*", filters: dict = None, limit: int = 100) -> list:
+    async def query(self, table: str, select: str = "*", filters: dict = None, limit: int = 100, order_by: str = None, order_desc: bool = False, custom_params: dict = None) -> list:
         """Query a Supabase table via PostgREST."""
         if not self.available:
             return []
@@ -39,6 +39,10 @@ class SupabaseClient:
             if filters:
                 for key, value in filters.items():
                     params[key] = f"eq.{value}"
+            if order_by:
+                params["order"] = f"{order_by}.{'desc' if order_desc else 'asc'}"
+            if custom_params:
+                params.update(custom_params)
 
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.get(
@@ -52,16 +56,19 @@ class SupabaseClient:
             pass
         return []
 
-    async def insert(self, table: str, data: dict) -> Optional[dict]:
+    async def insert(self, table: str, data: dict, upsert: bool = False) -> Optional[dict]:
         """Insert a row into a Supabase table."""
         if not self.available:
             return None
 
         try:
+            headers = self.headers.copy()
+            if upsert:
+                headers["Prefer"] = "return=representation, resolution=merge-duplicates"
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.post(
                     f"{self.url}/rest/v1/{table}",
-                    headers=self.headers,
+                    headers=headers,
                     json=data
                 )
                 if resp.status_code in (200, 201):

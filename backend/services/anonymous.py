@@ -6,28 +6,41 @@ Anonymous zero-knowledge reporting pipeline.
 - Reporter can track status without revealing identity
 """
 import uuid
-import hashlib
+import secrets
 from datetime import datetime, timezone
 from typing import Optional
+from services.supabase import get_supabase
 
-# In-memory report storage (replace with Supabase in production)
+# In-memory fallback if DB unavailable
 _reports: list[dict] = []
 
-
-def generate_anonymous_id() -> str:
-    """Generate a random anonymous ID with no link to the reporter."""
-    return "rpt-" + uuid.uuid4().hex[:12]
-
+def generate_anonymous_id(ip_address: str = None) -> str:
+    """Generate a daily rotating HMAC ID for deduplication without cross-day tracking."""
+    if not ip_address:
+        return secrets.token_hex(16)
+    import hmac
+    import hashlib
+    import os
+    # Derive the daily secret cryptographically using the environment key + date
+    env_secret = os.getenv("HMAC_DAILY_SECRET", "dev-fallback-secret-12345")
+    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    daily_key = hashlib.sha256(f"{env_secret}{date_str}".encode()).digest()
+    
+    return hmac.new(daily_key, ip_address.encode(), hashlib.sha256).hexdigest()[:16]
 
 def anonymize_location(lat: Optional[float], lng: Optional[float]) -> tuple[Optional[float], Optional[float]]:
-    """Round coordinates to ~1km granularity (city level)."""
+    """Round to 1 decimal place (~11km) with random jitter to prevent deterministic recovery."""
+    import random
     if lat is None or lng is None:
         return None, None
-    # 0.01 degrees ≈ 1.1km at the equator
-    return round(lat, 2), round(lng, 2)
+    
+    # Jitter of +/- 0.05 degrees (~5.5km)
+    j_lat = float(lat) + random.uniform(-0.05, 0.05)
+    j_lng = float(lng) + random.uniform(-0.05, 0.05)
+    
+    return round(j_lat, 1), round(j_lng, 1)
 
-
-def create_report(
+async def create_report(
     drug_name: str,
     description: str,
     city: str = None,
@@ -37,12 +50,14 @@ def create_report(
     user_id: str = None,
     lat: float = None,
     lng: float = None,
-    photo_urls: list[str] = None
+    photo_urls: list[str] = None,
+    client_ip: str = None
 ) -> dict:
     """Create a new suspicious drug report."""
+    db = get_supabase()
 
     report_id = str(uuid.uuid4())
-    anonymous_id = generate_anonymous_id() if anonymous else None
+    anonymous_id = generate_anonymous_id(client_ip) if anonymous else None
 
     # Anonymize location if requested
     if anonymous:
@@ -65,20 +80,49 @@ def create_report(
         "created_at": datetime.now(timezone.utc).isoformat()
     }
 
+    if db.available:
+        try:
+            res = await db.insert("reports", report)
+            if res:
+                return res[0] if isinstance(res, list) else report
+        except Exception:
+            pass
+
     _reports.append(report)
     return report
 
-
-def get_all_reports() -> list[dict]:
-    """Get all reports for heatmap display."""
+async def get_all_reports() -> list[dict]:
+    """Get all reports for heatmap display. Queries Supabase for real submissions."""
+    db = get_supabase()
+    if db.available:
+        try:
+            res = await db.query("reports", limit=1000)
+            if res:
+                return res
+        except Exception:
+            pass
     return _reports
 
-
-def get_report_by_anonymous_id(anon_id: str) -> Optional[dict]:
+async def get_report_by_anonymous_id(anon_id: str) -> Optional[dict]:
     """Allow anonymous reporter to check their report status."""
+    db = get_supabase()
+    if db.available:
+        try:
+            res = await db.query("reports", filters={"anonymous_id": anon_id}, limit=1)
+            if res and len(res) > 0:
+                r = res[0]
+                return {
+                    "report_id": r["id"],
+                    "anonymous_id": r["anonymous_id"],
+                    "drug_name": r["drug_name"],
+                    "status": r["status"],
+                    "created_at": r["created_at"]
+                }
+        except Exception:
+            pass
+
     for r in _reports:
         if r.get("anonymous_id") == anon_id:
-            # Return only non-identifying fields
             return {
                 "report_id": r["id"],
                 "anonymous_id": r["anonymous_id"],

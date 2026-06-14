@@ -1,5 +1,6 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import api from '../utils/api';
+import AIDisclaimer from '../components/AIDisclaimer';
 
 const LANGUAGES = {
   en: 'English', hi: 'हिन्दी', es: 'Español', fr: 'Français', pt: 'Português',
@@ -198,6 +199,8 @@ export default function SideEffectsPage() {
                 <p style={{ color: 'var(--text-3)' }}>No side effects could be parsed from this drug's FDA label.</p>
               </div>
             )}
+            
+            <AIDisclaimer aiGenerated={true} />
           </div>
         )}
       </div>

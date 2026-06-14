@@ -13,17 +13,22 @@ OPENFDA_BASE = "https://api.fda.gov"
 # In-memory cache for NDC lookups
 _ndc_cache: dict[str, dict] = {}
 _label_cache: dict[str, dict] = {}
-
+_shortage_cache: dict[str, dict] = {}  # { key: { data, timestamp } }
+from services.canonicalize import normalize_ndc
 
 async def lookup_by_ndc(ndc: str, api_key: str = "") -> Optional[dict]:
     """Look up a drug by NDC code via OpenFDA NDC endpoint."""
+    ndc_canonical = normalize_ndc(ndc)
     ndc_clean = ndc.strip().replace("-", "")
 
-    if ndc_clean in _ndc_cache:
+    # Check cache with canonical form first
+    if ndc_canonical in _ndc_cache:
+        return _ndc_cache[ndc_canonical]
+    elif ndc_clean in _ndc_cache:
         return _ndc_cache[ndc_clean]
 
-    # Try multiple NDC formats
-    search_terms = [ndc, ndc_clean]
+    # Try multiple NDC formats, starting with canonical
+    search_terms = [ndc_canonical, ndc, ndc_clean]
     if len(ndc_clean) == 10:
         # Try 4-4-2, 5-3-2, 5-4-1 formats
         search_terms.extend([
@@ -231,3 +236,43 @@ def extract_openfda_info(ndc_result: dict) -> dict:
         "rxcui": first("rxcui"),
         "upc": first("upc")
     }
+
+
+async def check_drug_shortage(active_ingredient: str, api_key: str = "") -> dict:
+    """Check FDA Drug Shortages endpoint for supply issues."""
+    import time
+    cache_key = active_ingredient.strip().lower()
+    
+    cached = _shortage_cache.get(cache_key)
+    if cached and time.time() - cached["timestamp"] < 21600:  # 6 hours
+        return cached["data"]
+    
+    result = {"in_shortage": False, "reason": None, "status": None}
+    
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        try:
+            params = {
+                "search": f'generic_name:"{active_ingredient}"',
+                "limit": 5
+            }
+            if api_key:
+                params["api_key"] = api_key
+            
+            resp = await client.get(f"{OPENFDA_BASE}/drug/shortages.json", params=params)
+            if resp.status_code == 200:
+                data = resp.json()
+                results = data.get("results", [])
+                if results:
+                    latest = results[0]
+                    result = {
+                        "in_shortage": True,
+                        "reason": latest.get("shortage_reason", "Unknown"),
+                        "status": latest.get("status", "Active"),
+                        "generic_name": latest.get("generic_name", active_ingredient),
+                    }
+        except Exception:
+            pass
+    
+    _shortage_cache[cache_key] = {"data": result, "timestamp": time.time()}
+    return result
+

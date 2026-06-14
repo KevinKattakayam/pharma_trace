@@ -25,10 +25,19 @@ class Settings(BaseSettings):
     # OpenFDA
     openfda_api_key: str = ""
 
+    # Gemini (Indian script drug name resolution — free tier)
+    gemini_api_key: str = ""
+
     # Security
     jwt_secret: str = "pharmatrace-dev-secret-change-in-production"
     jwt_algorithm: str = "HS256"
     jwt_expiration_hours: int = 24
+    hmac_daily_secret: str = "default_secret_rotate_me"
+    
+    # Web Push
+    vapid_private_key: str = ""
+    vapid_public_key: str = ""
+    vapid_claims_email: str = "mailto:admin@pharmatrace.app"
 
     class Config:
         env_file = ".env"

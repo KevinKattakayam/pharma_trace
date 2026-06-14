@@ -24,23 +24,11 @@ export default defineConfig({
           { src: 'icons/pwa-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' }
         ]
       },
-      workbox: {
-        globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
-        runtimeCaching: [
-          {
-            urlPattern: /^https:\/\/api\.fda\.gov\/.*/i,
-            handler: 'CacheFirst',
-            options: {
-              cacheName: 'openfda-cache',
-              expiration: { maxEntries: 200, maxAgeSeconds: 86400 }
-            }
-          },
-          {
-            urlPattern: /^https:\/\/fonts\.googleapis\.com\/.*/i,
-            handler: 'StaleWhileRevalidate',
-            options: { cacheName: 'google-fonts-stylesheets' }
-          }
-        ]
+      strategies: 'injectManifest',
+      srcDir: 'src',
+      filename: 'service-worker.js',
+      injectManifest: {
+         globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}']
       }
     })
   ],

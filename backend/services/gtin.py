@@ -85,6 +85,99 @@ def validate_gtin(barcode: str) -> dict:
     return result
 
 
+def parse_cdsco_barcode(data: str) -> dict:
+    """
+    Parse Indian CDSCO (Schedule H / Top 300) mandatory QR code format.
+    Handles JSON and Pipe-delimited structures encoding the 8 mandatory fields
+    specified by GSR 823(E).
+    """
+    result = {
+        "valid": False,
+        "format": "CDSCO",
+        "gtin": None,
+        "brand_name": None,
+        "generic_name": None,
+        "manufacturer": None,
+        "batch_no": None,
+        "mfg_date": None,
+        "expiry_date": None,
+        "mfg_license": None,
+        "mrp": None,
+        "raw": data
+    }
+    
+    # Clean data (sometimes prepended with URLs)
+    clean_data = data
+    if "qr.cdsco.gov.in" in data or "http" in data:
+        # Attempt to extract payload if it's base64 or URL encoded in a query param
+        try:
+            from urllib.parse import urlparse, parse_qs
+            parsed_url = urlparse(data)
+            qs = parse_qs(parsed_url.query)
+            if 'data' in qs:
+                clean_data = qs['data'][0]
+            elif 'd' in qs:
+                clean_data = qs['d'][0]
+        except Exception:
+            pass
+
+    import json
+    # Try parsing as JSON
+    try:
+        parsed = json.loads(clean_data)
+        if isinstance(parsed, dict):
+            # Map standard keys
+            result["gtin"] = parsed.get("UPI") or parsed.get("GTIN") or parsed.get("upi")
+            result["generic_name"] = parsed.get("API") or parsed.get("Generic") or parsed.get("api")
+            result["brand_name"] = parsed.get("Brand") or parsed.get("brand")
+            result["manufacturer"] = parsed.get("Mfg") or parsed.get("Manufacturer") or parsed.get("mfg")
+            result["batch_no"] = parsed.get("Batch") or parsed.get("batch") or parsed.get("Lot")
+            result["mfg_date"] = parsed.get("MFD") or parsed.get("mfd") or parsed.get("MfgDate")
+            result["expiry_date"] = parsed.get("EXP") or parsed.get("exp") or parsed.get("ExpDate")
+            result["mfg_license"] = parsed.get("Lic") or parsed.get("lic") or parsed.get("License")
+            result["mrp"] = parsed.get("MRP") or parsed.get("mrp") or parsed.get("Price")
+            
+            # G.S.R. 823(E) requires all 8 mandatory fields:
+            # UPI/GTIN, generic name, batch, expiry, mfg date, MRP, manufacturer, brand
+            mandatory = [
+                result["gtin"], result["generic_name"], result["batch_no"],
+                result["expiry_date"], result["mfg_date"], result["manufacturer"],
+                result["brand_name"], result["mrp"]
+            ]
+            if all(mandatory):
+                result["valid"] = True
+                return result
+            # Incomplete — fall through to GS1 pipeline
+    except json.JSONDecodeError:
+        pass
+
+    # Try parsing as Pipe-delimited (UPI|Generic|Brand|Mfg|Batch|MFD|EXP|MRP|Lic)
+    parts = clean_data.split('|')
+    if len(parts) >= 8:
+        result["gtin"] = parts[0]
+        result["generic_name"] = parts[1]
+        result["brand_name"] = parts[2]
+        result["manufacturer"] = parts[3]
+        result["batch_no"] = parts[4]
+        result["mfg_date"] = parts[5]
+        result["expiry_date"] = parts[6]
+        result["mrp"] = parts[7]
+        if len(parts) > 8:
+            result["mfg_license"] = parts[8]
+            
+        # Strict: all 8 mandatory fields must be present and non-empty
+        mandatory = [
+            result["gtin"], result["generic_name"], result["batch_no"],
+            result["expiry_date"], result["mfg_date"], result["manufacturer"],
+            result["brand_name"], result["mrp"]
+        ]
+        if all(f and str(f).strip() for f in mandatory):
+            result["valid"] = True
+            return result
+        # Incomplete — fall through
+
+    return result
+
 def parse_gs1_datamatrix(data: str) -> dict:
     """
     Parse GS1 DataMatrix or GS1-128 barcode data with Application Identifiers.

@@ -1,8 +1,8 @@
 # PharmaTrace
 
-PharmaTrace is a pharmaceutical verification and safety platform that helps users identify counterfeit medicines, check drug interactions, and access clinical safety data. It connects to live FDA databases, runs a 6-agent AI verification pipeline, and provides tools for health workers, caregivers, and everyday users in regions where counterfeit drugs are a serious public health problem.
+PharmaTrace is a pharmaceutical verification and safety platform that helps users identify counterfeit medicines, check drug interactions, manage family prescriptions, and access clinical safety data. It connects to live FDA databases and Indian drug registries (CDSCO), runs a multi-agent AI verification pipeline, and provides tools for health workers, caregivers, and everyday users in regions where counterfeit drugs are a serious public health problem.
 
-The platform consists of a Python/FastAPI backend with 37 REST API endpoints and a React frontend built as a Progressive Web App. Every verification query hits real FDA data -- there are no mock endpoints or placeholder responses.
+The platform consists of a Python/FastAPI backend with comprehensive REST API endpoints and a React frontend built as a Progressive Web App (PWA) with robust offline capabilities and native vernacular voice support.
 
 ---
 
@@ -19,10 +19,11 @@ The platform consists of a Python/FastAPI backend with 37 REST API endpoints and
 - [Environment Variables](#environment-variables)
 - [API Reference](#api-reference)
   - [Verification](#verification)
+  - [Family Cabinet and Prescriptions](#family-cabinet-and-prescriptions)
   - [Drug Information](#drug-information)
   - [Drug Interactions](#drug-interactions)
   - [Barcode and GTIN](#barcode-and-gtin)
-  - [Vision AI](#vision-ai)
+  - [Vision AI and Audio](#vision-ai-and-audio)
   - [AI Intelligence](#ai-intelligence)
   - [LangGraph Agent Pipeline](#langgraph-agent-pipeline)
   - [Reports and Pharmacies](#reports-and-pharmacies)
@@ -46,29 +47,54 @@ The platform consists of a Python/FastAPI backend with 37 REST API endpoints and
 
 ## What It Does
 
-**Drug Verification** -- Scan a barcode, photograph a pill, or type an NDC code. The system queries the OpenFDA drug database, validates the GTIN/GS1 barcode structure, checks for active FDA recalls, analyzes cold chain conditions at the user's location, and returns a confidence score with a transparent evidence trail showing exactly what matched and what failed.
+**Hybrid Drug Verification Pipeline** -- A cost-optimized, multi-tiered approach to medicine identification. Scans and photographs are first processed locally in the browser using Tesseract OCR. The extracted text is queried against the NIH RxNav API, followed by a fallback to the Indian CDSCO database. If all deterministic databases fail, the system falls back to an AI vision model. It checks for active FDA recalls, analyzes cold chain conditions, and returns a transparent evidence trail.
 
-**Drug Interaction Checking** -- Enter two or more medications. The system cross-references every pair against a clinically validated interaction database of 20+ known dangerous combinations, queries FDA label data for contraindications, and optionally uses Groq/Llama 3.3 to generate patient-friendly explanations of each interaction's mechanism and clinical effect.
+**Medicine Expiry Scanner** -- Scan a medicine strip, and the built-in OCR automatically extracts the expiry date regardless of formatting (including Indian formats, Hindi, and Malayalam characters). The system calculates the remaining days, displays clear warnings, and auto-saves the medicine to the user's digital cabinet.
 
-**Side Effect Explainer** -- Takes raw FDA drug label text and rewrites it in plain language at a 6th-grade reading level. Each side effect is categorized by severity (mild, moderate, severe) and can be translated into 20+ languages through LibreTranslate.
+**Doctor Visit Summarizer** -- After a doctor's appointment, patients can speak their prescribed medicines directly into the app in their native language. The platform utilizes advanced AI to generate a simple, jargon-free summary explaining what each medicine treats, when to take it, and critical warnings. It automatically checks for dangerous drug interactions and allows one-click sharing via WhatsApp.
+
+**Family Medicine Box** -- A complete digital inventory of the household's medications. Users can add family members along with their specific health conditions. Whenever a new medicine is scanned or added, the system automatically cross-references it against every family member's health profile, instantly flagging if a drug is unsafe for a specific person.
+
+**Vernacular Voice Interface** -- Built-in native voice command and dictation support utilizing the browser's MediaRecorder API and high-speed whisper transcription models. Users can interact with the platform in languages such as Malayalam, Hindi, Tamil, and English. The system automatically translates inputs and dynamically translates the app's spoken replies back to the user's native language.
+
+**Offline Progressive Web App Cache** -- Built to work without an internet connection in critical moments. On the first load, the app silently caches the top Indian and global medicines into the browser's local IndexedDB, automatically adapting to regional prescribing volumes via adaptive windowing. If a user loses connection, they can still scan or search for common medicines and receive instant verification results marked clearly as originating from the offline cache. Failed verifications are captured in a highly resilient Background Sync outbox that preserves cryptographic audit timing and survives session token rotations. 
+
+> [!WARNING]
+> **Security Note on Offline Mode (Shared Devices):** By default, the offline architecture stores session tokens (JWTs) in plaintext within the browser's IndexedDB `meta` store to facilitate Background Sync outbox replays. IndexedDB is not encrypted at rest. On a shared device (such as a shared clinic tablet), a malicious browser extension or another origin could theoretically access this data if browser isolation fails. For high-security clinic deployments, it is recommended to use dedicated, MDM-managed devices or implement Web Crypto API encryption utilizing a device-bound secret key before writing the token to IndexedDB.
+
+**Drug Interaction Checking** -- Enter two or more medications. The system cross-references every pair against a clinically validated interaction database, queries FDA label data for contraindications, and optionally uses Groq/Llama 3.3 to generate patient-friendly explanations of each interaction's mechanism and clinical effect.
+
+**Side Effect Explainer** -- Takes raw FDA drug label text and rewrites it in plain language at a 6th-grade reading level. Each side effect is categorized by severity (mild, moderate, severe) and can be translated into 20+ languages dynamically through LibreTranslate.
 
 **Dosage Personalizer** -- Flags unsafe doses for elderly patients, children, and patients with kidney impairment. Takes age, weight, and kidney function as inputs and returns risk-adjusted dosing recommendations based on clinical guidelines.
 
 **Generic Drug Finder** -- Given a branded drug's NDC, queries OpenFDA to find all FDA-approved generic alternatives with the same active ingredient, including manufacturer and strength information.
 
-**Outbreak Map** -- Leaflet.js-based heatmap showing reported counterfeit drug incidents by geographic location. Supports animated timeline playback and pharmacy trust scoring with anti-gaming ML that flags suspicious review patterns.
+**Outbreak Map** -- Leaflet.js-based heatmap showing reported counterfeit drug incidents by geographic location. Supports animated timeline playback and pharmacy trust scoring with anti-gaming heuristics that flag suspicious review patterns.
 
-**Batch Verification** -- Designed for health workers and clinic settings. Accepts rapid barcode input (including USB scanner support) and verifies each drug against FDA databases. Generates downloadable PDF reports for clinic records.
+**Batch Verification** -- Designed for health workers and clinic settings. Accepts rapid barcode input and verifies each drug against FDA databases. Generates downloadable PDF reports for clinic records.
 
 **Caregiver Dashboard** -- Remote medication monitoring. Caregivers generate an invite code, share it with a care recipient, and can then monitor their medication verification history and receive alerts for suspicious drugs or dangerous interactions.
 
 **Anonymous Reporting** -- Zero-knowledge reporting system for suspicious medicines. Reports are assigned a random anonymous ID with no link to the reporter's identity. Location data is rounded to city level. No IP addresses or device fingerprints are stored.
 
-**Pill Identification** -- GPT-4o Vision analyzes photographs of pills and packaging, identifying shape, color, imprint codes, and suspicion indicators. Also accepts text descriptions for pill identification.
-
-**Voice Interface** -- Built-in voice command support using the Web Speech API. Users can say "verify medicine," "check interactions," or "show nearby pharmacies" to navigate the app hands-free.
-
 **Immutable Audit Log** -- Every verification is recorded in a SHA-256 hash-chained audit log. Each record's hash includes the previous record's hash, creating a tamper-evident chain that can be independently verified.
+
+---
+
+## Enterprise Upgrades
+
+The PharmaTrace Verification Engine and Doctor Visit Summarizer have been systematically hardened to meet clinical safety, statistical correctness, and high-availability standards:
+
+- **Parallelized LangGraph Execution**: Core agent lookups (OpenFDA, Recalls, Interactions) now run simultaneously via `asyncio.gather`, slashing API latency and decoupling network constraints.
+- **Enterprise Interaction Scanning**: Upgraded from naive report counts to rigorous clinical mapping. The pipeline queries the NLM RxNorm APIs, calculates true FAERS *Signal Strength*, and strictly sorts warnings by clinical severity.
+- **Stateless Medical Pydantic Validation**: All LLM processing is wrapped in strict Pydantic schemas equipped with a `@field_validator` "Jargon Firewall," structurally blocking complex medical terminology and hallucinated output.
+- **Patient Context & Dosage Flags**: System prompts dynamically inject patient age, weight, and renal function (e.g., GFR < 30) to explicitly enforce safe dosage warnings for pediatric, elderly, and renal-impaired cohorts.
+- **Term-Protected Translation**: A robust regex-based masking layer protects critical dosages (e.g. `500mg`) and drug suffixes from being phonetically mangled by the LibreTranslate engine, featuring a fail-safe fallback path.
+- **Offline Self-Hosted Translation**: Completely removed reliance on external, rate-limited translation APIs by pointing the pipeline to a self-hosted, localized Docker instance (`localhost:5000`).
+- **Resilient Voice Streaming**: The rural WebRTC voice transcriber now features exponential backoff WebSocket reconnection handling (up to 3 automatic retries) and handles MediaRecorder lifecycle reassignment on dropout.
+- **Medical UI Safety**: Deterministic synthetic database keys are masked as "Unassigned (Internal)" to avoid misleading patients, and completely unrecognized medications instantly trigger explicit, red warning cards.
+- **Auditable Offline Registries**: The CDSCO PDF ingestion pipeline enforces layout-corruption row count assertions and logs a persistent `last_updated` metadata timestamp instantly exposed via the `/health` endpoint.
 
 ---
 
@@ -78,18 +104,19 @@ The platform consists of a Python/FastAPI backend with 37 REST API endpoints and
 Frontend (React + Vite)          Backend (FastAPI + LangGraph)
 --------------------------       ---------------------------------
 React 19 SPA                     FastAPI application server
-React Router (client-side)       6 API router modules
-Progressive Web App (PWA)        16 service modules
-Leaflet.js maps                  6-agent LangGraph pipeline
-Chart.js visualizations          SHA-256 audit chain
-ZXing barcode scanner            Pydantic request/response schemas
-Web Speech API (voice)           Supabase (PostgreSQL + PostGIS)
-jsPDF report generation
-                                 External APIs:
-Vite dev server proxies           - OpenFDA (drugs, labels, recalls, FAERS)
+React Router (client-side)       8 API router modules
+Progressive Web App (PWA)        18 service modules
+IndexedDB Offline Cache          6-agent LangGraph pipeline
+Leaflet.js maps                  SHA-256 audit chain
+Chart.js visualizations          Pydantic request/response schemas
+Tesseract.js Local OCR           Supabase (PostgreSQL + PostGIS)
+MediaRecorder Voice Capture
+jsPDF report generation          External APIs:
+                                  - OpenFDA (drugs, labels, recalls)
+Vite dev server proxies           - RxNav / CDSCO (drug registries)
 /api/* to backend                 - Open-Meteo (weather/cold chain)
                                   - LibreTranslate (translation)
-                                  - Groq (Llama 3.3 70B inference)
+                                  - Groq (Llama 3.3 70B & Whisper)
                                   - OpenRouter (GPT-4o Vision)
 ```
 
@@ -103,22 +130,21 @@ The frontend communicates with the backend exclusively through `/api/v1/*` endpo
 |-------|-----------|---------|
 | Backend framework | FastAPI | REST API server with automatic OpenAPI docs |
 | AI orchestration | LangGraph + LangChain | 6-agent drug verification pipeline |
-| LLM inference | Groq (Llama 3.3 70B) | Side effect parsing, interaction explanations, drug analysis |
+| LLM inference | Groq (Llama 3.3 70B) | Side effect parsing, interaction explanations, drug analysis, summarization |
+| Voice transcription | Groq (Whisper Large) | High-speed multi-lingual voice-to-text processing |
 | Vision AI | OpenRouter (GPT-4o) | Pill and packaging image analysis |
-| Drug database | OpenFDA API | NDC lookup, labels, recalls, adverse events, generics |
-| Barcode validation | WHO GTIN/GS1 | International barcode format validation and country detection |
+| Drug databases | OpenFDA, RxNav, CDSCO | NDC lookup, labels, recalls, generic alternatives, Indian registries |
+| Local OCR | Tesseract.js | In-browser expiry date parsing and text extraction |
 | Cold chain | Open-Meteo API | Temperature and humidity monitoring at verification location |
 | Translation | LibreTranslate | Free translation to 20+ languages, no API key required |
-| Database | Supabase (PostgreSQL + PostGIS) | Persistent storage with geospatial queries |
+| Database | Supabase (PostgreSQL + PostGIS)| Persistent storage with geospatial queries |
 | Frontend framework | React 19 | Component-based UI |
 | Build tool | Vite 5 | Development server and production bundler |
-| Routing | React Router 7 | Client-side navigation |
+| Local Storage | IndexedDB | Offline PWA caching for medicines |
 | Maps | Leaflet.js + CARTO tiles | Outbreak heatmap and pharmacy locations |
 | Charts | Chart.js | Data visualization |
-| Barcode scanning | ZXing | Camera-based barcode reading |
-| PDF generation | jsPDF | Batch verification reports |
+| Voice Capture | MediaRecorder API | Native browser audio recording |
 | PWA | vite-plugin-pwa + Workbox | Offline support and installability |
-| Voice | Web Speech API | Voice command navigation |
 
 ---
 
@@ -139,20 +165,26 @@ pharma_trace/
 |   |-- routers/
 |   |   |-- verify.py                # /verify/* endpoints (barcode, image, batch)
 |   |   |-- interactions.py          # /interactions/* endpoints
-|   |   |-- drugs.py                 # /drugs/* endpoints (side effects, dosage, generics)
+|   |   |-- drugs.py                 # /drugs/* endpoints (side effects, dosage)
 |   |   |-- reports.py               # /reports/* endpoints (anonymous reporting)
 |   |   |-- pharmacies.py            # /pharmacies/* endpoints (trust scores)
 |   |   |-- caregiver.py             # /caregiver/* endpoints
+|   |   |-- voice.py                 # /voice/* endpoints (transcription)
+|   |   |-- cabinet.py               # /cabinet/* endpoints (family medicine box)
+|   |   |-- prescription.py          # /prescription/* endpoints (visit summarizer)
 |   |-- services/
-|       |-- openfda.py               # OpenFDA API client (NDC, labels, recalls, FAERS)
+|       |-- openfda.py               # OpenFDA API client
+|       |-- cdsco.py                 # Indian CDSCO registry integration
 |       |-- gtin.py                  # GTIN/GS1 barcode validation and parsing
 |       |-- cold_chain.py            # Open-Meteo weather API for cold chain
-|       |-- groq_ai.py              # Groq/Llama 3.3 LLM client
-|       |-- vision.py                # GPT-4o Vision pill analysis
+|       |-- groq_ai.py               # Groq/Llama LLM client
+|       |-- vision.py                # Hybrid vision pipeline (RxNav -> CDSCO -> AI)
+|       |-- voice.py                 # Groq Whisper audio transcription
+|       |-- expiry.py                # Regex-based expiry date parser
+|       |-- prescription.py          # Prescription summarizer business logic
 |       |-- interactions.py          # Drug interaction database and checker
 |       |-- side_effects.py          # FDA label parser for side effects
 |       |-- dosage.py                # Dosage safety calculator
-|       |-- drugbank.py              # Drug information service
 |       |-- confidence.py            # Confidence score calculation engine
 |       |-- translation.py           # LibreTranslate client
 |       |-- anonymous.py             # Zero-knowledge anonymous reporting
@@ -168,35 +200,37 @@ pharma_trace/
     |-- src/
         |-- main.jsx                 # React entry point
         |-- App.jsx                  # Router and layout
-        |-- index.css                # Design system (all styles)
+        |-- index.css                # Design system
         |-- components/
         |   |-- Navbar.jsx           # Top bar + bottom navigation + tools menu
-        |   |-- Scanner.jsx          # Camera/barcode/manual entry scanner
+        |   |-- Scanner.jsx          # Camera/barcode/OCR scanner
         |   |-- DrugResult.jsx       # Verification result card with evidence trail
         |   |-- ConfidenceGauge.jsx  # SVG circular confidence indicator
         |   |-- PharmacyCard.jsx     # Pharmacy trust score card
-        |   |-- VoiceInterface.jsx   # Voice command button
+        |   |-- VoiceInterface.jsx   # Global voice command button
         |   |-- LowBandwidth.jsx     # Network quality detection banner
         |-- pages/
         |   |-- Home.jsx             # Landing page with feature overview
         |   |-- ScanPage.jsx         # Drug verification interface
-        |   |-- InteractionChecker.jsx  # Multi-drug interaction scanner
+        |   |-- InteractionChecker.jsx # Multi-drug interaction scanner
         |   |-- MapView.jsx          # Outbreak heatmap + pharmacy map
-        |   |-- BatchVerification.jsx   # Rapid-scan batch mode
-        |   |-- CaregiverDashboard.jsx  # Remote medication monitoring
+        |   |-- BatchVerification.jsx # Rapid-scan batch mode
+        |   |-- CaregiverDashboard.jsx # Remote medication monitoring
         |   |-- ReportForm.jsx       # Anonymous drug reporting
         |   |-- SideEffectsPage.jsx  # Plain-language side effect viewer
         |   |-- DosagePage.jsx       # Dosage safety checker
         |   |-- GenericFinder.jsx    # Generic alternative finder
-        |   |-- ApiDocs.jsx          # API documentation and SDK examples
+        |   |-- ApiDocs.jsx          # API documentation
+        |   |-- CabinetPage.jsx      # Family Medicine Box manager
+        |   |-- PrescriptionSummary.jsx # Doctor visit summarizer
         |-- hooks/
         |   |-- useScanner.js        # Camera and barcode scanning logic
-        |   |-- useVoice.js          # Web Speech API integration
+        |   |-- useVoice.js          # MediaRecorder audio capture
         |   |-- useConnection.js     # Network quality detection
-        |   |-- useAuth.js           # Authentication state
         |-- utils/
             |-- api.js               # HTTP client for all backend calls
             |-- formatters.js        # Display formatting utilities
+            |-- cache.js             # IndexedDB offline caching utility
 ```
 
 ---
@@ -209,7 +243,7 @@ pharma_trace/
 - Node.js 18 or later
 - npm 9 or later
 
-No API keys are required to run the core functionality. OpenFDA, Open-Meteo, LibreTranslate, and GTIN validation all work without authentication. Optional services (Groq, OpenRouter, Supabase) require keys for extended features.
+No API keys are required to run the core functionality. Deterministic lookup pipelines (OpenFDA, RxNav, CDSCO mock, Open-Meteo, LibreTranslate, GTIN validation) all work without authentication. Optional services (Groq, OpenRouter, Supabase) require keys for extended AI features and cloud persistence.
 
 ### Backend Setup
 
@@ -266,10 +300,10 @@ Create a `.env` file in the `backend/` directory:
 # OpenFDA (free -- 240 requests/min with key, 40/min without)
 OPENFDA_API_KEY=
 
-# OpenRouter (GPT-4o Vision for pill image analysis)
+# OpenRouter (GPT-4o Vision for fallback image analysis)
 OPENROUTER_API_KEY=
 
-# Groq (Llama 3.3 70B -- side effects, interactions, drug analysis)
+# Groq (Llama 3.3 70B and Whisper Large -- voice, interactions, drug analysis)
 GROQ_API_KEY=
 
 # Supabase (PostgreSQL + PostGIS -- persistent storage)
@@ -286,9 +320,9 @@ All keys are optional. The platform degrades gracefully:
 | Service | Without Key | With Key |
 |---------|------------|----------|
 | OpenFDA | Works (40 req/min) | Higher rate limit (240 req/min) |
-| Groq | AI explanations disabled | Llama 3.3 70B inference available |
-| OpenRouter | Image analysis disabled | GPT-4o Vision pill identification |
-| Supabase | In-memory storage (data lost on restart) | Persistent PostgreSQL with PostGIS |
+| Groq | Audio/AI features disabled | Voice processing and Llama inference available |
+| OpenRouter | Fallback analysis disabled | GPT-4o Vision pill identification |
+| Supabase | In-memory storage (resets on restart) | Persistent PostgreSQL with PostGIS |
 
 ---
 
@@ -301,15 +335,27 @@ Base URL: `/api/v1`
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | POST | `/verify/barcode` | Verify a drug by barcode or NDC code |
-| POST | `/verify/image` | Verify a drug by photograph (GPT-4o Vision) |
+| POST | `/verify/image` | Verify using the hybrid vision pipeline (RxNav -> CDSCO -> AI) |
 | POST | `/verify/batch` | Batch verify multiple barcodes |
 | GET | `/verify/history` | Retrieve verification history |
+
+### Family Cabinet and Prescriptions
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/cabinet/members` | Add a family member with health conditions |
+| POST | `/cabinet/add` | Add a medicine to the household inventory |
+| GET | `/cabinet/list/{user_id}` | Retrieve cabinet inventory |
+| GET | `/cabinet/check/{medicine}/{member_id}` | Cross-reference safety of a drug against a member |
+| GET | `/cabinet/expiring/{user_id}` | Retrieve medicines expiring within 30 days |
+| POST | `/prescription/summarize` | Generate a patient-friendly doctor visit summary |
 
 ### Drug Information
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/drugs/{ndc}` | Look up drug details from OpenFDA |
+| GET | `/drugs/common-indian-medicines` | Retrieve common medicines for PWA offline caching |
 | GET | `/drugs/{ndc}/side-effects?lang=en` | Plain-language side effects with optional translation |
 | POST | `/drugs/{ndc}/dosage` | Dosage safety check (age, weight, kidney function) |
 | GET | `/drugs/{ndc}/generics` | Find generic alternatives with the same active ingredient |
@@ -328,12 +374,13 @@ Base URL: `/api/v1`
 | POST | `/barcode/validate` | Validate GTIN/EAN/UPC barcode format and check digit |
 | POST | `/barcode/parse-gs1` | Parse GS1 DataMatrix (GTIN, lot, expiry, serial) |
 
-### Vision AI
+### Vision AI and Audio
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/vision/analyze` | Analyze pill/packaging photo with GPT-4o Vision |
+| POST | `/vision/analyze` | Analyze pill/packaging photo |
 | POST | `/vision/identify` | Identify a pill from a text description |
+| POST | `/voice/transcribe` | Transcribe and translate vernacular audio uploads |
 
 ### AI Intelligence
 
@@ -388,17 +435,19 @@ Base URL: `/api/v1`
 
 | Route | Page | Description |
 |-------|------|-------------|
-| `/` | Home | Landing page with animated stats, live API status, feature cards, and tech stack overview |
-| `/scan` | Scan and Verify | Camera barcode scanner, image capture, and manual NDC entry with real-time verification results |
-| `/interactions` | Interaction Checker | Multi-drug interaction scanner with severity matrix and AI-powered explanations |
-| `/map` | Outbreak Map | Leaflet.js heatmap of counterfeit drug reports with pharmacy trust scores and geospatial filtering |
-| `/batch` | Batch Verification | Rapid-scan mode for health workers with USB scanner support and PDF report export |
+| `/` | Home | Landing page with animated stats, live API status, and feature overview |
+| `/scan` | Scan and Verify | Camera scanner, OCR expiry extraction, and real-time offline-capable verification |
+| `/prescription` | Prescription Summary | Voice-enabled wizard to record and summarize doctor visits |
+| `/cabinet` | Cabinet Manager | Family Medicine Box showing expiring drugs and family health profiles |
+| `/interactions` | Interaction Checker | Multi-drug interaction scanner with severity matrix and explanations |
+| `/map` | Outbreak Map | Heatmap of counterfeit drug reports with pharmacy trust scores |
+| `/batch` | Batch Verification | Rapid-scan mode for health workers with USB scanner support and PDF export |
 | `/dashboard` | Caregiver Dashboard | Remote medication monitoring with invite code linking and safety alerts |
 | `/report` | Report Form | Multi-step anonymous reporting form with zero-knowledge privacy guarantees |
-| `/side-effects` | Side Effects | Plain-language side effect viewer with severity categorization and 20+ language translation |
+| `/side-effects` | Side Effects | Plain-language side effect viewer with severity categorization and translation |
 | `/dosage` | Dosage Safety | Patient-specific dosage checker for elderly, pediatric, and renal-impaired patients |
 | `/generics` | Generic Finder | FDA-verified generic alternative lookup by active ingredient |
-| `/api-docs` | API Documentation | Interactive endpoint reference with Python and JavaScript SDK code samples |
+| `/api-docs` | API Documentation | Interactive endpoint reference with SDK code samples |
 
 ---
 
@@ -438,6 +487,8 @@ The `supabase_migration.sql` file contains the full PostgreSQL schema. Run it in
 | `reports` | Community-submitted suspicious drug reports (supports anonymous) |
 | `pharmacies` | Pharmacy locations with trust scores and verification stats |
 | `pharmacy_reviews` | User reviews with anti-gaming ML flagging |
+| `family_members` | Profiles detailing user relationships, age, and existing conditions |
+| `medicine_cabinet`| Inventory tracking of medications and calculated expiry dates |
 | `audit_chain` | SHA-256 hash-chained verification audit records |
 | `caregiver_links` | Invite-code-based caregiver-recipient relationships |
 | `scan_history` | Per-user scan history for refill prediction |
@@ -520,18 +571,13 @@ resp = httpx.post(f"{BASE}/interactions/check", json={
 for ix in resp.json()["interactions"]:
     print(f"{ix['drug_a']} + {ix['drug_b']}: {ix['severity']} -- {ix['clinical_effect']}")
 
-# Get side effects in Hindi
-resp = httpx.get(f"{BASE}/drugs/59726-065-30/side-effects?lang=hi")
-for se in resp.json()["side_effects"]:
-    print(f"[{se['severity']}] {se['description']}")
-
-# Validate an international barcode
-resp = httpx.post(f"{BASE}/barcode/validate?barcode=8901234567890")
-print(resp.json())  # format, country, check_digit_valid
-
-# Check cold chain conditions
-resp = httpx.get(f"{BASE}/cold-chain?lat=19.076&lng=72.877")
-print(resp.json())  # temperature, humidity, storage safety
+# Generate a prescription summary
+response = httpx.post(f"{BASE}/prescription/summarize", json={
+    "medicines": ["Paracetamol", "Amoxicillin"],
+    "age": 65,
+    "conditions": ["hypertension"]
+})
+print(response.json())
 ```
 
 ### JavaScript
@@ -551,24 +597,15 @@ const verify = await fetch(`${BASE}/verify/barcode`, {
 
 console.log(`${verify.verdict} -- ${verify.confidence}% -- ${verify.brand_name}`);
 
-// Check interactions
-const ix = await fetch(`${BASE}/interactions/check`, {
+// Summarize a doctor visit
+const summary = await fetch(`${BASE}/prescription/summarize`, {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ drugs: ['Warfarin', 'Aspirin', 'Ibuprofen'] })
+  body: JSON.stringify({ 
+    medicines: ['Warfarin', 'Aspirin'],
+    conditions: ['Heart disease'] 
+  })
 }).then(r => r.json());
-
-ix.interactions.forEach(i =>
-  console.log(`${i.drug_a} + ${i.drug_b}: ${i.severity}`)
-);
-
-// Get side effects in Spanish
-const se = await fetch(`${BASE}/drugs/59726-065-30/side-effects?lang=es`)
-  .then(r => r.json());
-
-// Find generic alternatives
-const generics = await fetch(`${BASE}/drugs/59726-065-30/generics`)
-  .then(r => r.json());
 ```
 
 ---
@@ -577,14 +614,15 @@ const generics = await fetch(`${BASE}/drugs/59726-065-30/generics`)
 
 | Service | Cost | API Key Required | What It Does |
 |---------|------|------------------|-------------|
-| [OpenFDA](https://open.fda.gov/) | Free | No (optional for higher rate limits) | Drug database, labels, recalls, adverse events, generic alternatives |
-| [Open-Meteo](https://open-meteo.com/) | Free | No | Weather data for cold chain temperature and humidity analysis |
-| [LibreTranslate](https://libretranslate.com/) | Free | No | Text translation to 20+ languages using public instances |
-| [Groq](https://groq.com/) | Free tier available | Yes | Fast Llama 3.3 70B inference for AI explanations and drug analysis |
-| [OpenRouter](https://openrouter.ai/) | Pay-per-use | Yes | GPT-4o Vision access for pill and packaging image analysis |
-| [Supabase](https://supabase.com/) | Free tier available | Yes | PostgreSQL database with PostGIS geospatial extensions |
+| OpenFDA | Free | No | Drug database, labels, recalls, adverse events |
+| RxNav & CDSCO | Free | No | Global and Indian drug registries |
+| Open-Meteo | Free | No | Weather data for cold chain analysis |
+| LibreTranslate | Free | No | Text translation to 20+ languages |
+| Groq | Free tier | Yes | Fast Llama inference and Whisper transcription |
+| OpenRouter | Pay-per-use | Yes | GPT-4o Vision access for pill analysis fallback |
+| Supabase | Free tier | Yes | PostgreSQL database with PostGIS geospatial tracking |
 
-The core verification pipeline (barcode validation, FDA lookup, recall checking, interaction scanning, confidence scoring) works entirely with free, keyless APIs. Groq, OpenRouter, and Supabase extend the platform with AI intelligence, vision capabilities, and persistent storage.
+The core verification pipeline works entirely with free, keyless APIs. Groq, OpenRouter, and Supabase extend the platform with AI intelligence, voice capabilities, and persistent storage.
 
 ---
 

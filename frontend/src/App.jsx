@@ -1,8 +1,9 @@
-import React, { Suspense, lazy } from 'react';
+import React, { Suspense, lazy, useEffect } from 'react';
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import Navbar from './components/Navbar';
 import VoiceInterface from './components/VoiceInterface';
 import LowBandwidth from './components/LowBandwidth';
+import { initOfflineCache } from './utils/cache';
 
 const Home = lazy(() => import('./pages/Home'));
 const ScanPage = lazy(() => import('./pages/ScanPage'));
@@ -15,6 +16,10 @@ const ApiDocs = lazy(() => import('./pages/ApiDocs'));
 const GenericFinder = lazy(() => import('./pages/GenericFinder'));
 const DosagePage = lazy(() => import('./pages/DosagePage'));
 const SideEffectsPage = lazy(() => import('./pages/SideEffectsPage'));
+const CabinetPage = lazy(() => import('./pages/CabinetPage'));
+const PrescriptionSummary = lazy(() => import('./pages/PrescriptionSummary'));
+const ClinicDashboard = lazy(() => import('./pages/ClinicDashboard'));
+const AdverseEventReport = lazy(() => import('./pages/AdverseEventReport'));
 
 function LoadingFallback() {
   return (
@@ -28,6 +33,10 @@ function LoadingFallback() {
 }
 
 export default function App() {
+  useEffect(() => {
+    initOfflineCache();
+  }, []);
+
   return (
     <BrowserRouter>
       <LowBandwidth>
@@ -45,6 +54,10 @@ export default function App() {
             <Route path="/generics" element={<GenericFinder />} />
             <Route path="/dosage" element={<DosagePage />} />
             <Route path="/side-effects" element={<SideEffectsPage />} />
+            <Route path="/cabinet" element={<CabinetPage />} />
+            <Route path="/prescription" element={<PrescriptionSummary />} />
+            <Route path="/clinic" element={<ClinicDashboard />} />
+            <Route path="/adverse-event" element={<AdverseEventReport />} />
           </Routes>
         </Suspense>
         <VoiceInterface />
