@@ -59,7 +59,7 @@ class Settings(BaseSettings):
 
     # Security
     allow_unauthenticated_demo_user: bool = False
-    jwt_secret: str = "pharmatrace-dev-secret-change-in-production"
+    jwt_secret: str = ""
     jwt_algorithm: str = "HS256"
     jwt_expiration_hours: int = 24
     hmac_daily_secret: str = "default_secret_rotate_me"
