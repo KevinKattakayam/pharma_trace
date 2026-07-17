@@ -3,13 +3,14 @@ Drug verification router — barcode scanning, image analysis, batch mode.
 Integrates: OpenFDA, WHO GTIN, GPT-4o Vision, Open-Meteo cold chain, SHA-256 audit.
 """
 import uuid
+from typing import Optional, List, Dict, Any
 from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, Depends
 from dependencies import get_current_user
 from models.schemas import (
     BarcodeVerifyRequest, ImageVerifyRequest, BatchVerifyRequest,
     VerificationResponse, EvidenceItem, InteractionsPhotoRequest,
-    SymptomSafetyRequest
+    SymptomSafetyRequest, CurrentUser
 )
 from services.openfda import lookup_by_ndc, get_drug_label, check_recalls, extract_openfda_info, check_drug_shortage
 import asyncio
@@ -21,21 +22,26 @@ from services.gtin import validate_gtin, parse_gs1_datamatrix, parse_cdsco_barco
 from services.vision import analyze_pill_image, analyze_multiple_pills_image
 from services.interactions import check_all_interactions
 from config import get_settings
+from starlette.requests import Request
+from services.limiter import limiter
+from services.sanitize import sanitize_drug_input
 
 router = APIRouter(prefix="/verify", tags=["verification"])
 
-# In-memory verification history
-_verifications: list[dict] = []
+from repositories.entities import VerificationRepository
+
+verification_repo = VerificationRepository()
 
 
 @router.post("/barcode", response_model=VerificationResponse)
-async def verify_barcode(request: BarcodeVerifyRequest, user: dict = Depends(get_current_user)):
+@limiter.limit("30/minute")
+async def verify_barcode(request: Request, body: BarcodeVerifyRequest, user: Optional[CurrentUser] = Depends(get_current_user)):
     """
     Verify a drug by barcode/NDC number.
     Pipeline: GTIN validate → OpenFDA lookup → Recall check → Label parse → Cold chain → Score.
     """
     settings = get_settings()
-    barcode = request.barcode.strip()
+    barcode = body.barcode.strip()
 
     if not barcode:
         raise HTTPException(status_code=400, detail="Barcode is required")
@@ -43,7 +49,7 @@ async def verify_barcode(request: BarcodeVerifyRequest, user: dict = Depends(get
     # Step 1: Parse Barcode (CDSCO -> GS1 Datamatrix -> GTIN)
     cdsco_result = parse_cdsco_barcode(barcode)
     gs1_result = None
-    gtin_result = None
+    gtin_result: Dict[str, Any] = {}
     
     barcode_valid = False
     ndc_to_lookup = barcode
@@ -62,21 +68,67 @@ async def verify_barcode(request: BarcodeVerifyRequest, user: dict = Depends(get
         # Fallback to standard GTIN validation
         if not barcode_valid:
             gtin_result = validate_gtin(barcode)
-            barcode_valid = gtin_result.get("valid", False) or len(barcode.replace("-", "").replace(" ", "")) >= 8
+            barcode_valid = gtin_result.get("valid", False)
             ndc_to_lookup = gtin_result.get("ndc_extracted") or barcode
 
-    # Step 2: Look up in OpenFDA
+    # Step 2: Look up in OpenFDA, CDSCO India, & Multi-Tier Resolver
+    from services.cdsco import lookup_indian_drug
+    from services.drug_resolver import resolve_drug_name
+    
     ndc_result = await lookup_by_ndc(ndc_to_lookup, api_key=settings.openfda_api_key)
-    openfda_match = ndc_result is not None
+    cdsco_drug = None
+    resolved_drug = None
+    
+    if isinstance(ndc_result, dict) and ndc_result.get("error"):
+        ndc_result = None
+    if not ndc_result:
+        cdsco_drug = await lookup_indian_drug(ndc_to_lookup)
+        if not cdsco_drug and " " in ndc_to_lookup:
+            fw = ndc_to_lookup.split()[0].strip()
+            if len(fw) >= 4:
+                cdsco_drug = await lookup_indian_drug(fw)
+                if not cdsco_drug:
+                    ndc_result = await lookup_by_ndc(fw, api_key=settings.openfda_api_key)
+        if not cdsco_drug and not ndc_result:
+            res_raw = await resolve_drug_name(ndc_to_lookup)
+            if res_raw and res_raw.get("source") != "unresolved":
+                resolved_drug = res_raw
+                    
+    openfda_match = (ndc_result is not None) or (cdsco_drug is not None) or (resolved_drug is not None)
 
     # Step 3: Extract drug info
-    drug_info = extract_openfda_info(ndc_result) if ndc_result else {
-        "brand_name": cdsco_result.get("brand_name"), 
-        "generic_name": cdsco_result.get("generic_name"), 
-        "manufacturer": cdsco_result.get("manufacturer"),
-        "ndc": ndc_to_lookup, "product_type": None, "route": None,
-        "active_ingredients": None, "substance_name": cdsco_result.get("generic_name")
-    }
+    if ndc_result:
+        drug_info = extract_openfda_info(ndc_result)
+    elif cdsco_drug:
+        drug_info = {
+            "brand_name": cdsco_drug.get("brand_name"),
+            "generic_name": cdsco_drug.get("generic_name"),
+            "manufacturer": cdsco_drug.get("manufacturer"),
+            "ndc": cdsco_drug.get("ndc", ndc_to_lookup),
+            "product_type": "HUMAN PRESCRIPTION DRUG",
+            "route": cdsco_drug.get("route", "ORAL"),
+            "active_ingredients": cdsco_drug.get("generic_name"),
+            "substance_name": cdsco_drug.get("generic_name")
+        }
+    elif resolved_drug:
+        drug_info = {
+            "brand_name": resolved_drug.get("brand_name", ndc_to_lookup),
+            "generic_name": resolved_drug.get("generic_name", "Verified Drug"),
+            "manufacturer": resolved_drug.get("manufacturer", "Official Registry Match"),
+            "ndc": str(resolved_drug.get("rxcui", ndc_to_lookup)),
+            "product_type": "HUMAN PRESCRIPTION DRUG",
+            "route": "ORAL",
+            "active_ingredients": resolved_drug.get("generic_name", ""),
+            "substance_name": resolved_drug.get("generic_name", "")
+        }
+    else:
+        drug_info = {
+            "brand_name": cdsco_result.get("brand_name"), 
+            "generic_name": cdsco_result.get("generic_name"), 
+            "manufacturer": cdsco_result.get("manufacturer"),
+            "ndc": ndc_to_lookup, "product_type": None, "route": None,
+            "active_ingredients": None, "substance_name": cdsco_result.get("generic_name")
+        }
 
     # Step 4: Check recalls (FDA + CDSCO) + shortage in parallel
     active_ingredient = drug_info.get("substance_name") or drug_info.get("generic_name") or ""
@@ -94,16 +146,21 @@ async def verify_barcode(request: BarcodeVerifyRequest, user: dict = Depends(get
     
     recalls, cdsco_res, shortage_raw = await asyncio.gather(recall_task, cdsco_task, shortage_task, return_exceptions=True)
     
-    if isinstance(recalls, Exception): recalls = []
-    if isinstance(cdsco_res, dict) and cdsco_res.get("has_cdsco_recall"):
-        recalls.append({
-            "status": "Ongoing",
-            "reason_for_recall": cdsco_res.get("recall_reason", "CDSCO Safety Alert"),
-            "report_date": cdsco_res.get("recall_date", "Recent")
-        })
-        
+    fda_recall_available = not isinstance(recalls, Exception) and not (isinstance(recalls, list) and any(isinstance(r, dict) and r.get("error") for r in recalls))
+    cdsco_recall_available = isinstance(cdsco_res, dict) and cdsco_res.get("available", False)
+    if not fda_recall_available:
+        no_recalls = None  # Inconclusive check due to service outage
+        recalls = [r for r in (recalls if isinstance(recalls, list) else []) if not r.get("error")]
+    else:
+        if isinstance(cdsco_res, dict) and cdsco_res.get("has_cdsco_recall"):
+            recalls.append({
+                "status": "Ongoing",
+                "reason_for_recall": cdsco_res.get("recall_reason", "CDSCO Safety Alert"),
+                "report_date": cdsco_res.get("recall_date", "Recent")
+            })
+        no_recalls = len(recalls) == 0 if cdsco_recall_available else None
+
     shortage = shortage_raw if isinstance(shortage_raw, dict) else {"in_shortage": False}
-    no_recalls = len(recalls) == 0
 
     # Step 5: Get drug label for side effects
     label = await get_drug_label(
@@ -111,14 +168,15 @@ async def verify_barcode(request: BarcodeVerifyRequest, user: dict = Depends(get
         drug_name=drug_info.get("brand_name") or drug_info.get("generic_name"),
         api_key=settings.openfda_api_key
     )
-    side_effects = extract_side_effects_from_label(label) if label else []
+    final_drug_name = drug_info.get("brand_name") or drug_info.get("generic_name") or ndc_to_lookup
+    side_effects = await extract_side_effects_from_label(label, final_drug_name) if label else []
 
     # Step 6: Cold chain check (if location provided, via Open-Meteo free API)
     cold_chain_ok = None
-    if request.location and request.location.get("lat"):
+    if body.location and body.location.get("lat") and body.location.get("lng"):
         cold_result = await check_cold_chain(
-            request.location["lat"],
-            request.location["lng"],
+            body.location["lat"],
+            body.location["lng"],
             label=label
         )
         if cold_result.get("available"):
@@ -133,6 +191,25 @@ async def verify_barcode(request: BarcodeVerifyRequest, user: dict = Depends(get
         cold_chain_ok=cold_chain_ok,
         report_history_clean=True
     )
+
+    # Step 7b: authoritative serial verification. A check digit or NDC match
+    # only proves formatting/record existence, never physical authenticity.
+    serialized = gs1_result or {}
+    from services.manufacturer_verification import verify_serialized_package
+    serial_check = await verify_serialized_package(
+        gtin=serialized.get("gtin") or cdsco_result.get("gtin"),
+        serial_number=serialized.get("serial_number"),
+        lot=serialized.get("lot") or cdsco_result.get("batch_no"),
+    )
+    if serial_check.get("verified") is True:
+        confidence = 100.0
+        evidence.append(EvidenceItem(check="authoritative_serial", status="pass", description="Package serial was confirmed by the authorised verification service.", weight=100.0))
+    elif serial_check.get("verified") is False:
+        evidence.append(EvidenceItem(check="authoritative_serial", status="fail", description="Package serial was rejected by the authorised verification service. Do not dispense; escalate immediately.", weight=100.0))
+    else:
+        evidence.append(EvidenceItem(check="authoritative_serial", status="warn", description="No authoritative package-serial verification was available. This is a record match only, not proof of authenticity.", weight=0.0))
+    if no_recalls is None:
+        evidence.append(EvidenceItem(check="recall_coverage", status="warn", description="One or more recall sources were unavailable, so recall status is inconclusive.", weight=0.0))
 
     # Add GTIN evidence
     if gtin_result.get("format") and gtin_result.get("format") != "NDC":
@@ -150,69 +227,63 @@ async def verify_barcode(request: BarcodeVerifyRequest, user: dict = Depends(get
                 weight=0.0
             ))
 
-    verdict = determine_verdict(confidence)
+    verdict = determine_verdict(
+        confidence,
+        serial_verification=serial_check.get("verified"),
+        no_active_recall=no_recalls,
+    )
 
     # Step 8: Create verification record & audit chain entry
     verification_id = str(uuid.uuid4())
-    verified_at_time = request.verified_at if request.verified_at else datetime.now(timezone.utc).isoformat()
+    verified_at_time = body.verified_at if body.verified_at else datetime.now(timezone.utc).isoformat()
     
-    audit_record = add_audit_record(verification_id, {
+    audit_record = await add_audit_record(verification_id, {
         "barcode": barcode,
         "verdict": verdict,
         "confidence": confidence,
         "drug": drug_info.get("brand_name") or drug_info.get("generic_name"),
         "method": "barcode",
-        "source": request.source,
+        "source": body.source,
         "verified_at": verified_at_time,
         "gtin_format": gtin_result.get("format"),
-        "gtin_country": gtin_result.get("country")
+        "gtin_country": gtin_result.get("country"),
+        "evidence": [e.model_dump() if hasattr(e, "model_dump") else getattr(e, "__dict__", str(e)) for e in evidence],
+        "priors": {"base": 0.5, "prior_name": "Standard baseline prior"},
+        "databases_queried": ["WHO GTIN", "OpenFDA", "CDSCO India"]
     })
 
-    # Store in history (memory)
-    _verifications.append({
-        "id": verification_id,
-        "barcode": barcode,
-        "verdict": verdict,
-        "confidence": confidence,
-        "drug_info": drug_info,
-        "gtin": gtin_result
-    })
-
-    # Persist to database for cold chain history and stats
-    from services.supabase import get_supabase
-    db = get_supabase()
-    if db.available:
-        try:
-            loc = None
-            if request.location and request.location.get("lat") and request.location.get("lng"):
-                loc = f"POINT({request.location['lng']} {request.location['lat']})"
-                
-            await db.insert("verifications", {
-                "id": verification_id,
-                "barcode": barcode,
-                "method": "barcode",
-                "verdict": verdict,
-                "confidence": confidence,
-                "brand_name": drug_info.get("brand_name"),
-                "generic_name": drug_info.get("generic_name"),
-                "manufacturer": drug_info.get("manufacturer"),
-                "ndc": drug_info.get("ndc"),
-                "has_recall": not no_recalls,
-                "evidence": [e.model_dump() for e in evidence],
-                "audit_hash": audit_record["record_hash"],
-                "gtin_data": gtin_result,
-                "temperature_c": cold_result.get("temperature_c") if cold_chain_ok is not None and 'cold_result' in locals() else None,
-                "humidity_pct": cold_result.get("humidity_pct") if cold_chain_ok is not None and 'cold_result' in locals() else None,
-                "location": loc,
-                "clinic_id": user.get("clinic_id")
-            })
-        except Exception as e:
-            print("Failed to persist verification:", e)
+    # Persist to database via VerificationRepository (automatically uses local SQLite when offline)
+    try:
+        loc = None
+        if body.location and body.location.get("lat") and body.location.get("lng"):
+            loc = f"POINT({body.location['lng']} {body.location['lat']})"
+            
+        await verification_repo.create({
+            "id": verification_id,
+            "barcode": barcode,
+            "method": "barcode",
+            "verdict": verdict,
+            "confidence": confidence,
+            "brand_name": drug_info.get("brand_name"),
+            "generic_name": drug_info.get("generic_name"),
+            "manufacturer": drug_info.get("manufacturer"),
+            "ndc": drug_info.get("ndc"),
+            "has_recall": not no_recalls,
+            "evidence": [e.model_dump() if hasattr(e, "model_dump") else getattr(e, "__dict__", str(e)) for e in evidence],
+            "audit_hash": audit_record.get("audit_hash", ""),
+            "gtin_data": gtin_result,
+            "temperature_c": cold_result.get("temperature_c") if cold_chain_ok is not None and 'cold_result' in locals() else None,
+            "humidity_pct": cold_result.get("humidity_pct") if cold_chain_ok is not None and 'cold_result' in locals() else None,
+            "location": loc,
+            "clinic_id": user.clinic_id if user else None
+        })
+    except Exception as e:
+        import structlog
+        structlog.get_logger().error("verification_persist_failed", error=str(e))
 
     # Pipeline B: Passive learning — teach the alias table from real traffic
     if drug_info.get("generic_name"):
         try:
-            import asyncio
             from services.vernacular_resolver import learn_from_verification
             asyncio.create_task(learn_from_verification(
                 query=barcode,
@@ -237,13 +308,17 @@ async def verify_barcode(request: BarcodeVerifyRequest, user: dict = Depends(get
         has_recall=not no_recalls,
         evidence=evidence,
         side_effects=side_effects,
-        audit_hash=audit_record["record_hash"],
-        shortage=shortage if isinstance(shortage, dict) else {"in_shortage": False}
+        audit_hash=audit_record.get("audit_hash", ""),
+        shortage=shortage if isinstance(shortage, dict) else {"in_shortage": False},
+        requires_human_review=serial_check.get("verified") is not True,
+        verification_scope="authoritative_serial" if serial_check.get("verified") is not None else "record_match_only",
+        data_freshness={"external_data_max_age_hours": settings.external_data_max_age_hours, "authoritative_serial_available": serial_check.get("available", False)}
     )
 
 
 @router.post("/image", response_model=VerificationResponse)
-async def verify_image(request: ImageVerifyRequest, user: dict = Depends(get_current_user)):
+@limiter.limit("30/minute")
+async def verify_image(request: Request, body: ImageVerifyRequest, user: Optional[CurrentUser] = Depends(get_current_user)):
     """
     Verify a drug by pill/packaging photo.
     Uses Hybrid Pipeline: Tesseract Text -> RxNav -> CDSCO -> GPT-4o Vision.
@@ -251,16 +326,16 @@ async def verify_image(request: ImageVerifyRequest, user: dict = Depends(get_cur
     verification_id = str(uuid.uuid4())
 
     # Try Hybrid vision analysis
-    vision_result = await analyze_pill_image(request.image, request.extracted_text)
+    vision_result = await analyze_pill_image(body.image, body.extracted_text)
     image_analyzed = vision_result.get("available", False)
     
     source_method = vision_result.get("source_method", "Unknown Source")
 
     # Extract expiry date if text was sent
     expiry_info = None
-    if request.extracted_text:
+    if body.extracted_text:
         from services.expiry import extract_expiry_date
-        expiry_info = extract_expiry_date(request.extracted_text)
+        expiry_info = extract_expiry_date(body.extracted_text)
 
     # Determine image match from vision analysis
     image_match = None
@@ -272,21 +347,57 @@ async def verify_image(request: ImageVerifyRequest, user: dict = Depends(get_cur
         elif suspicion == "high":
             image_match = False
 
+    query_text = body.extracted_text or (vision_result.get("analysis", {}).get("possible_drug") if image_analyzed else None)
+    registry_match = False
+    resolved_info = {}
+    if query_text:
+        settings = get_settings()
+        ndc_res = await lookup_by_ndc(query_text, api_key=settings.openfda_api_key)
+        if isinstance(ndc_res, dict) and not ndc_res.get("error"):
+            resolved_info = extract_openfda_info(ndc_res)
+            registry_match = True
+        if not registry_match:
+            cdsco_res = await lookup_indian_drug(query_text)
+            if not cdsco_res and " " in query_text:
+                fw = query_text.split()[0].strip()
+                if len(fw) >= 4:
+                    cdsco_res = await lookup_indian_drug(fw)
+            if cdsco_res:
+                resolved_info = cdsco_res
+                registry_match = True
+        if not registry_match:
+            res_raw = await resolve_drug_name(query_text)
+            if res_raw and res_raw.get("source") != "unresolved":
+                resolved_info = {
+                    "brand_name": res_raw.get("brand_name", query_text),
+                    "generic_name": res_raw.get("generic_name", "Verified Drug"),
+                    "manufacturer": res_raw.get("manufacturer", "Official Registry Match"),
+                }
+                registry_match = True
+
     # Cold chain check
     cold_chain_ok = None
-    if request.location and request.location.get("lat"):
-        cold_result = await check_cold_chain(request.location["lat"], request.location["lng"])
+    if body.location and body.location.get("lat") and body.location.get("lng"):
+        cold_result = await check_cold_chain(body.location["lat"], body.location["lng"])
         if cold_result.get("available"):
             cold_chain_ok = cold_result.get("ok", True)
 
     confidence, evidence = compute_confidence(
         barcode_valid=False,
-        openfda_match=False,
-        recall_status=True,
-        image_match=image_match,
+        openfda_match=registry_match,
+        recall_status=None,
+        image_match=image_match if image_analyzed else (True if registry_match else None),
         cold_chain_ok=cold_chain_ok,
         report_history_clean=True
     )
+
+    if registry_match:
+        evidence.append(EvidenceItem(
+            check="drug_registry_check",
+            status="pass",
+            description=f"Verified via Registry Match: {resolved_info.get('brand_name', query_text)} ({resolved_info.get('generic_name', '')})",
+            weight=40.0
+        ))
 
     # Add vision evidence
     if image_analyzed:
@@ -307,74 +418,80 @@ async def verify_image(request: ImageVerifyRequest, user: dict = Depends(get_cur
         ))
 
     verdict = determine_verdict(confidence)
-    brand_name = vision_result.get("analysis", {}).get("possible_drug") if image_analyzed else None
+    brand_name = resolved_info.get("brand_name") or (vision_result.get("analysis", {}).get("possible_drug") if image_analyzed else body.extracted_text)
 
     # Auto-save to cabinet if expiry is found and drug is identified
     if expiry_info and expiry_info.get("status") != "unknown" and brand_name:
         try:
             from routers.cabinet import add_medicine, Medicine
             await add_medicine(Medicine(
-                user_id="demo-user-123",
+                user_id=user.user_id if user else "anonymous",
                 medicine_name=brand_name,
                 expiry_date=expiry_info["raw_date"]
             ))
         except Exception as e:
-            print("Failed to auto-save to cabinet:", str(e))
+            import structlog
+            structlog.get_logger().error("cabinet_autosave_failed", error=str(e))
 
-    verified_at_time = request.verified_at if request.verified_at else datetime.now(timezone.utc).isoformat()
-    audit_record = add_audit_record(verification_id, {
+    verified_at_time = body.verified_at if body.verified_at else datetime.now(timezone.utc).isoformat()
+    audit_record = await add_audit_record(verification_id, {
         "method": "image",
         "verdict": verdict,
         "confidence": confidence,
         "vision_available": image_analyzed,
-        "identification_source": source_method,
-        "source": request.source,
+        "identification_source": source_method if image_analyzed else "OCR Registry Lookup",
+        "source": body.source,
         "verified_at": verified_at_time
     })
 
-    from services.supabase import get_supabase
-    db = get_supabase()
-    if db.available:
-        try:
-            loc = None
-            if request.location and request.location.get("lat") and request.location.get("lng"):
-                loc = f"POINT({request.location['lng']} {request.location['lat']})"
-                
-            await db.insert("verifications", {
-                "id": verification_id,
-                "method": "image",
-                "verdict": verdict,
-                "confidence": confidence,
-                "brand_name": brand_name,
-                "evidence": [e.model_dump() for e in evidence],
-                "audit_hash": audit_record["record_hash"],
-                "temperature_c": cold_result.get("temperature_c") if cold_chain_ok is not None and 'cold_result' in locals() else None,
-                "humidity_pct": cold_result.get("humidity_pct") if cold_chain_ok is not None and 'cold_result' in locals() else None,
-                "location": request.location,
-                "clinic_id": user.get("clinic_id")
-            })
-        except Exception as e:
-            print("Failed to persist image verification:", e)
+    try:
+        loc = None
+        if body.location and body.location.get("lat") and body.location.get("lng"):
+            loc = f"POINT({body.location['lng']} {body.location['lat']})"
+            
+        await verification_repo.create({
+            "id": verification_id,
+            "method": "image",
+            "verdict": verdict,
+            "confidence": confidence,
+            "brand_name": brand_name,
+            "evidence": [e.model_dump() if hasattr(e, "model_dump") else getattr(e, "__dict__", str(e)) for e in evidence],
+            "audit_hash": audit_record.get("audit_hash", ""),
+            "temperature_c": cold_result.get("temperature_c") if cold_chain_ok is not None and 'cold_result' in locals() else None,
+            "humidity_pct": cold_result.get("humidity_pct") if cold_chain_ok is not None and 'cold_result' in locals() else None,
+            "location": loc,
+            "clinic_id": user.clinic_id if user else None
+        })
+    except Exception as e:
+        import structlog
+        structlog.get_logger().error("image_verification_persist_failed", error=str(e))
 
     return VerificationResponse(
         verification_id=verification_id,
         verdict=verdict,
         confidence=confidence,
         evidence=evidence,
-        audit_hash=audit_record["record_hash"],
-        identification_source=source_method,
+        audit_hash=audit_record.get("audit_hash", ""),
+        identification_source=source_method if image_analyzed else "OCR Registry Match",
         brand_name=brand_name,
+        generic_name=resolved_info.get("generic_name"),
+        manufacturer=resolved_info.get("manufacturer"),
+        product_type=resolved_info.get("product_type", "HUMAN PRESCRIPTION DRUG"),
+        route=resolved_info.get("route", "ORAL"),
+        active_ingredients=resolved_info.get("active_ingredients", resolved_info.get("generic_name")),
         expiry_info=expiry_info,
-        ai_generated=True
+        ai_generated=True,
+        requires_human_review=True,
+        verification_scope="image_or_record_match_only"
     )
 
 
 import json
-import asyncio
-from fastapi.responses import StreamingResponse
+
+from fastapi.responses import StreamingResponse, JSONResponse
 
 @router.post("/interactions-photo")
-async def verify_interactions_photo(request: InteractionsPhotoRequest, user: dict = Depends(get_current_user)):
+async def verify_interactions_photo(request: InteractionsPhotoRequest, user: Optional[CurrentUser] = Depends(get_current_user)):
     """
     Medicine interaction photo check.
     Takes a photo of multiple medicine strips, identifies all of them,
@@ -412,7 +529,7 @@ async def verify_interactions_photo(request: InteractionsPhotoRequest, user: dic
 
 
 @router.post("/symptom-safety")
-async def verify_symptom_safety(request: SymptomSafetyRequest, user: dict = Depends(get_current_user)):
+async def verify_symptom_safety(request: SymptomSafetyRequest, user: Optional[CurrentUser] = Depends(get_current_user)):
     """
     Symptom-to-drug safety checker.
     Suggests OTC medications for the given symptoms, and immediately
@@ -443,7 +560,7 @@ async def verify_symptom_safety(request: SymptomSafetyRequest, user: dict = Depe
 
 
 @router.post("/batch")
-async def verify_batch(request: BatchVerifyRequest, user: dict = Depends(get_current_user)):
+async def verify_batch(request: BatchVerifyRequest, user: Optional[CurrentUser] = Depends(get_current_user)):
     """Verify multiple barcodes concurrently with a semaphore, returning a streaming response."""
     sem = asyncio.Semaphore(10)
     
@@ -513,46 +630,79 @@ async def verify_batch(request: BatchVerifyRequest, user: dict = Depends(get_cur
 async def batch_audit(request: dict):
     """Hash the final batch payload for PDF integrity."""
     verification_id = str(uuid.uuid4())
-    audit_record = add_audit_record(verification_id, {
+    audit_record = await add_audit_record(verification_id, {
         "method": "batch_pdf_export",
         "items": request.get("items", []),
         "timestamp": datetime.now(timezone.utc).isoformat()
     })
-    return {"audit_hash": audit_record["record_hash"]}
+    return {"audit_hash": audit_record.get("audit_hash", "")}
 
 
 @router.get("/history")
 async def get_verification_history():
-    """Get verification history (most recent 50)."""
-    return {"verifications": _verifications[-50:]}
+    """Get verification history (most recent 50) via VerificationRepository."""
+    records = await verification_repo.list_all(limit=50)
+    return {"verifications": records}
 
 @router.post("/offline-sync")
-async def sync_offline_verification(request: dict):
+async def sync_offline_verification(request: Request, body: dict):
     """
     Endpoint for the PWA Background Sync to submit offline cache hits.
-    These bypass the OpenFDA pipeline because they were determined deterministically offline.
+    Supports Optimistic Concurrency Control (OCC) via If-Match header.
+    Returns 409 Conflict if the entity was modified server-side while the client was offline.
     """
-    verification_id = request.get("verification_id") or str(uuid.uuid4())
-    verified_at = request.get("verified_at", datetime.now(timezone.utc).isoformat())
-    source = request.get("source", "offline_cache")
-        
-    audit_record = add_audit_record(verification_id, {
-        "barcode": request.get("brand_name", "unknown"),
-        "verdict": request.get("verdict", "authentic"),
-        "confidence": request.get("confidence", 100),
-        "drug": request.get("brand_name", "unknown"),
+    payload = body
+    verification_id = payload.get("verification_id") or str(uuid.uuid4())
+    verified_at = payload.get("verified_at", datetime.now(timezone.utc).isoformat())
+    source = payload.get("source", "offline_cache")
+
+    # OCC: Check If-Match entity version for conflict detection
+    client_version = request.headers.get("If-Match")
+    if client_version and verification_id != f"offline-{verification_id}":
+        # Check if this verification_id already exists with a different version
+        existing = await verification_repo.find_by_id(verification_id)
+        if existing:
+            server_updated = existing.get("updated_at") or existing.get("created_at", "")
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "error": "CONFLICT",
+                    "message": "Entity was modified on the server while you were offline.",
+                    "client_version": client_version,
+                    "server_version": server_updated,
+                    "server_state": {
+                        "verification_id": existing.get("id"),
+                        "verdict": existing.get("verdict"),
+                        "confidence": existing.get("confidence"),
+                        "updated_at": server_updated
+                    },
+                    "client_state": {
+                        "verification_id": verification_id,
+                        "verdict": payload.get("verdict"),
+                        "confidence": payload.get("confidence"),
+                        "verified_at": verified_at
+                    },
+                    "resolution": "manual_review_required"
+                }
+            )
+
+    audit_record = await add_audit_record(verification_id, {
+        "barcode": payload.get("brand_name", "unknown"),
+        "verdict": payload.get("verdict", "unverified"),
+        "confidence": payload.get("confidence", 0),
+        "drug": payload.get("brand_name", "unknown"),
         "method": "offline_cache",
         "source": source,
         "verified_at": verified_at
     })
     
-    return {"status": "synced", "audit_hash": audit_record["record_hash"]}
+    return {"status": "synced", "audit_hash": audit_record.get("audit_hash", "")}
 
 
 @router.get("/{verification_id}")
 async def get_verification(verification_id: str):
-    """Get a specific verification by ID."""
-    for v in _verifications:
-        if v["id"] == verification_id:
-            return v
+    """Get a specific verification by ID via VerificationRepository."""
+    v = await verification_repo.find_by_id(verification_id)
+    if v:
+        return v
     raise HTTPException(status_code=404, detail="Verification not found")

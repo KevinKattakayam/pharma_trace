@@ -71,7 +71,7 @@ def parse_pdf_to_db(pdf_path: Path, conn: sqlite3.Connection):
                         continue
                         
                     # Skip headers
-                    if "Name of the Drug" in str(row[0]) or "Indication" in str(row[1]):
+                    if any("Name of" in str(cell) or "Indication" in str(cell) or "Approval" in str(cell) for cell in row):
                         continue
                         
                     try:
@@ -113,12 +113,16 @@ async def main():
     for i, url in enumerate(PDF_URLS):
         pdf_path = pdf_dir / f"cdsco_approvals_{i}.pdf"
         try:
-            logger.info(f"Downloading CDSCO PDF from {url}...")
-            await download_pdf(url, pdf_path)
+            if not pdf_path.exists():
+                logger.info(f"Downloading CDSCO PDF from {url}...")
+                await download_pdf(url, pdf_path)
             logger.info("Parsing PDF...")
             parse_pdf_to_db(pdf_path, conn)
         except Exception as e:
             logger.error(f"Failed to process {url}: {e}")
+            if pdf_path.exists():
+                logger.info("Falling back to parsing existing local PDF...")
+                parse_pdf_to_db(pdf_path, conn)
             
     conn.close()
     logger.info("CDSCO Database build complete.")

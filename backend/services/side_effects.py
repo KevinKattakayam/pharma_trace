@@ -5,6 +5,7 @@ at a 6th-grade reading level with severity labeling.
 import re
 from typing import Optional
 from models.schemas import SideEffect
+from services.groq_ai import ai_rewrite_side_effects
 
 
 # Common side effects database with plain-language descriptions
@@ -40,7 +41,7 @@ COMMON_SIDE_EFFECTS = {
 }
 
 
-def extract_side_effects_from_label(label_data: dict) -> list[SideEffect]:
+async def extract_side_effects_from_label(label_data: dict, drug_name: str = "") -> list[SideEffect]:
     """Extract and simplify side effects from an OpenFDA drug label."""
     side_effects = []
 
@@ -53,37 +54,79 @@ def extract_side_effects_from_label(label_data: dict) -> list[SideEffect]:
         "stop_use"
     ]
 
+    raw_text_parts = []
     raw_text = ""
     for field in fields_to_check:
         values = label_data.get(field, [])
         if isinstance(values, list):
+            raw_text_parts.extend(values)
             raw_text += " ".join(values) + " "
         elif isinstance(values, str):
+            raw_text_parts.append(values)
             raw_text += values + " "
+            
+    # AI Dynamic Rewriting (Primary)
+    if raw_text_parts:
+        try:
+            ai_res = await ai_rewrite_side_effects(raw_text_parts, drug_name)
+            if ai_res:
+                return [
+                    SideEffect(
+                        description=r.get("description", ""),
+                        severity=r.get("severity", "mild"),
+                        frequency=r.get("frequency", "Unknown")
+                    )
+                    for r in ai_res
+                ]
+        except Exception:
+            pass # Fallback to authoritative label sentence extraction
+
+    # Authoritative FDA Label Sentence Extraction (When AI is offline or unavailable)
+    found = set()
+    if raw_text_parts:
+        for part in raw_text_parts:
+            # Clean and split into individual warning sentences or bullet points
+            sentences = [s.strip() for s in re.split(r'\. |\n|•|- |\*|; ', part) if len(s.strip()) > 15]
+            for s in sentences[:20]:
+                clean_s = s.capitalize()
+                if not clean_s.endswith("."): clean_s += "."
+                if clean_s.lower() in found: continue
+                found.add(clean_s.lower())
+                
+                # Classify severity heuristically from real FDA warning wording
+                sev = "mild"
+                s_lower = clean_s.lower()
+                if any(w in s_lower for w in ["fatal", "death", "severe", "anaphylax", "emergency", "stop use", "call doctor", "hospital", "seizure", "bleeding", "contraindicat"]):
+                    sev = "severe"
+                elif any(w in s_lower for w in ["warning", "caution", "consult", "doctor", "rash", "fever", "vomit", "dizzy", "pain"]):
+                    sev = "moderate"
+                side_effects.append(SideEffect(
+                    description=clean_s,
+                    severity=sev,
+                    frequency="Reported in FDA regulatory label"
+                ))
 
     raw_text = raw_text.lower()
-
-    # Match known side effects
-    found = set()
-    for keyword, info in COMMON_SIDE_EFFECTS.items():
-        if keyword in raw_text and keyword not in found:
-            found.add(keyword)
+    # Also check MedDRA critical safety terms so severe warnings are never missed
+    from services.meddra_gate import MEDDRA_CRITICAL_SAFETY_TERMS
+    for term in MEDDRA_CRITICAL_SAFETY_TERMS:
+        if term in raw_text and not any(term in str(se.description).lower() for se in side_effects):
             side_effects.append(SideEffect(
-                description=info["plain"],
-                severity=info["severity"],
-                frequency=info["frequency"]
+                description=f"Critical safety warning: {term.title()} reported in regulatory label.",
+                severity="severe",
+                frequency="Reported in clinical surveillance"
             ))
 
     # Sort by severity (severe first)
     severity_order = {"severe": 0, "moderate": 1, "mild": 2}
     side_effects.sort(key=lambda x: severity_order.get(x.severity, 3))
 
-    # If no known side effects found, add a generic note
+    # If no side effects found in label, add a generic guidance note
     if not side_effects:
         side_effects.append(SideEffect(
-            description="Side effect information could not be parsed from the drug label. Consult your pharmacist or doctor for details.",
+            description="Specific side effect text could not be extracted from this label. Consult your pharmacist or doctor for details.",
             severity="mild",
             frequency=None
         ))
 
-    return side_effects
+    return side_effects[:25]

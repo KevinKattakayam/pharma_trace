@@ -32,8 +32,32 @@ from routers.clinic import router as clinic_router
 from routers.audit_export import router as audit_export_router
 from routers.pvpi import router as pvpi_router
 from routers.doctors import router as doctors_router
+from routers.safety_cases import router as safety_cases_router
 
 settings = get_settings()
+
+import structlog
+import sentry_sdk
+
+# Configure structured JSON logging
+structlog.configure(
+    processors=[
+        structlog.stdlib.add_log_level,
+        structlog.contextvars.merge_contextvars,
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.processors.JSONRenderer()
+    ],
+    logger_factory=structlog.PrintLoggerFactory(),
+)
+logger = structlog.get_logger()
+
+# Initialize Sentry error tracking if DSN is provided
+if settings.sentry_dsn:
+    sentry_sdk.init(
+        dsn=settings.sentry_dsn,
+        traces_sample_rate=1.0,
+        environment="production" if not settings.debug else "development"
+    )
 
 app = FastAPI(
     title=settings.app_name,
@@ -71,6 +95,26 @@ app = FastAPI(
     redoc_url="/api/redoc"
 )
 
+# Rate Limiting (SlowAPI)
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+from services.limiter import limiter
+
+app.state.limiter = limiter
+from models.exceptions import DatabaseConnectionError
+from fastapi.responses import JSONResponse
+from fastapi import Request
+
+@app.exception_handler(DatabaseConnectionError)
+async def db_connection_error_handler(request: Request, exc: DatabaseConnectionError):
+    return JSONResponse(
+        status_code=503,
+        content={"error": "Database service currently unreachable (offline/demo mode active)", "detail": str(exc)}
+    )
+
+app.add_middleware(SlowAPIMiddleware)
+
 # CORS
 app.add_middleware(
     CORSMiddleware,
@@ -78,16 +122,46 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Request-ID"],
 )
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
+import uuid
+import jwt
+
+class RequestContextMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        req_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+        uid = "anonymous"
+        auth = request.headers.get("Authorization")
+        if auth and auth.startswith("Bearer "):
+            try:
+                token = auth.split(" ")[1]
+                payload = jwt.decode(
+                    token,
+                    settings.jwt_secret,
+                    algorithms=[settings.jwt_algorithm],
+                    options={"verify_exp": True, "verify_signature": True},
+                )
+                uid = payload.get("sub") or payload.get("user_id") or "anonymous"
+            except Exception:
+                pass
+        
+        structlog.contextvars.clear_contextvars()
+        structlog.contextvars.bind_contextvars(request_id=req_id, user_id=str(uid))
+        
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = req_id
+        return response
+
+app.add_middleware(RequestContextMiddleware)
 
 class IPStrippingMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         # Override client host to prevent IP logging/storage anywhere downstream
-        if request.client:
-            request.client = request.client._replace(host="127.0.0.1")
+        if request.scope.get("client"):
+            request.scope["client"] = ("127.0.0.1", request.scope["client"][1])
         # Also strip typical proxy headers that could leak IP
         headers = dict(request.scope['headers'])
         for ip_header in [b'x-forwarded-for', b'x-real-ip']:
@@ -113,6 +187,7 @@ app.include_router(clinic_router, prefix="/api/v1")
 app.include_router(audit_export_router, prefix="/api/v1")
 app.include_router(pvpi_router, prefix="/api/v1")
 app.include_router(doctors_router, prefix="/api/v1")
+app.include_router(safety_cases_router, prefix="/api/v1")
 
 
 # ═══════════════════════════════════════════════════
@@ -120,8 +195,8 @@ app.include_router(doctors_router, prefix="/api/v1")
 # ═══════════════════════════════════════════════════
 
 @app.get("/api/v1/health", tags=["system"])
-async def health_check():
-    """Health check with full service status."""
+async def health_check(details: bool = False):
+    """Fast liveness check; optional details avoid blocking deployment probes."""
     from services.audit import get_chain_length
     from services.supabase import get_supabase
 
@@ -156,7 +231,37 @@ async def health_check():
         "total_members": 0,
         "last_safety_check": None
     }
-    if db.available:
+
+
+@app.get("/api/v1/capabilities", tags=["system"])
+async def capabilities():
+    """Machine-readable feature contract for the frontend and deployment checks."""
+    return {
+        "verification": {
+            "record_lookup": True,
+            "physical_pack_authentication": bool(settings.manufacturer_verification_url),
+            "requires_review_without_serial_check": True,
+            "max_image_upload_bytes": settings.max_image_upload_bytes,
+        },
+        "clinical": {
+            "interaction_provider": bool(settings.clinical_interaction_provider_url),
+            "automated_dose_recommendations": False,
+            "clinician_review_required": True,
+        },
+        "data": {
+            "max_external_data_age_hours": settings.external_data_max_age_hours,
+            "cdsco_registry": True,
+            "regulatory_alerts": True,
+        },
+        "safety": {
+            "unsupported_input_behavior": "review_required",
+            "audit_trail": True,
+            "safety_case_workflow": True,
+        },
+    }
+    # Health probes must not wait on a remote database. Operators can explicitly
+    # request details when they need live aggregate metrics.
+    if details and db.cloud_available:
         try:
             mems = await db.query("family_members", limit=10000)
             if mems: cabinet_stats["total_members"] = len(mems)
@@ -171,19 +276,20 @@ async def health_check():
         "status": "healthy",
         "service": settings.app_name,
         "version": settings.app_version,
-        "audit_chain_length": get_chain_length(),
+        "audit_chain_length": await get_chain_length() if details and db.cloud_available else None,
         "cabinet_stats": cabinet_stats,
         "databases": {
             "cdsco_last_updated": cdsco_updated,
             "drugbank_last_updated": drugbank_updated
         },
         "services": {
-            "barcode": "connected",
-            "openfda": "connected",
-            "recalls": "connected",
-            "interactions": "connected",
+            "barcode": "local",
+            "openfda": "on_demand",
+            "recalls": "on_demand",
+            "interactions": "configured" if settings.clinical_interaction_provider_url else "review_required",
+            "manufacturer_serial": "configured" if settings.manufacturer_verification_url else "not configured",
             "groq_ai": "connected" if settings.groq_api_key else "not configured",
-            "supabase": "connected" if db.available else "offline",
+            "supabase": "configured" if db.cloud_available else "offline_fallback",
         }
     }
 
@@ -204,7 +310,7 @@ async def get_home_stats():
     stats = {
         "verifications_performed": 0,
         "counterfeits_flagged": 0,
-        "active_recalls": 34 # Base OpenFDA national average fallback
+        "active_recalls": 0
     }
     
     if db.available:
@@ -262,7 +368,8 @@ async def get_languages():
 
 
 @app.post("/api/v1/translate", tags=["translation"])
-async def translate(text: str, target: str, source: str = "en"):
+@limiter.limit("20/minute")
+async def translate(request: Request, text: str, target: str, source: str = "en"):
     """Translate text to any supported language via LibreTranslate (free, no API key)."""
     from services.translation import translate_text
     translated = await translate_text(text, target, source)
@@ -279,7 +386,8 @@ async def translate(text: str, target: str, source: str = "en"):
 # ═══════════════════════════════════════════════════
 
 @app.post("/api/v1/barcode/validate", tags=["barcode"])
-async def validate_barcode(barcode: str):
+@limiter.limit("60/minute")
+async def validate_barcode(request: Request, barcode: str):
     """Validate a GTIN/EAN/UPC barcode using GS1 check-digit algorithm.
     Detects country of origin and extracts NDC if present."""
     from services.gtin import validate_gtin
@@ -287,7 +395,8 @@ async def validate_barcode(barcode: str):
 
 
 @app.post("/api/v1/barcode/parse-gs1", tags=["barcode"])
-async def parse_gs1(data: str):
+@limiter.limit("60/minute")
+async def parse_gs1(request: Request, data: str):
     """Parse a GS1 DataMatrix barcode — extracts GTIN, lot, expiry, serial number."""
     from services.gtin import parse_gs1_datamatrix
     return parse_gs1_datamatrix(data)
@@ -298,7 +407,8 @@ async def parse_gs1(data: str):
 # ═══════════════════════════════════════════════════
 
 @app.post("/api/v1/vision/analyze", tags=["vision"])
-async def analyze_image(image: str):
+@limiter.limit("10/minute")
+async def analyze_image(request: Request, image: str):
     """Analyze a pill/packaging photo using GPT-4o Vision.
     Requires OPENAI_API_KEY. Returns shape, color, imprint, and suspicion level."""
     from services.vision import analyze_pill_image
@@ -306,7 +416,8 @@ async def analyze_image(image: str):
 
 
 @app.post("/api/v1/vision/identify", tags=["vision"])
-async def identify_pill(description: str):
+@limiter.limit("10/minute")
+async def identify_pill(request: Request, description: str):
     """Identify a pill from a text description using GPT-4o.
     Example: 'small round white pill with M on one side and 523 on the other'"""
     from services.vision import analyze_pill_description
@@ -318,32 +429,35 @@ async def identify_pill(description: str):
 # ═══════════════════════════════════════════════════
 
 @app.get("/api/v1/refill/schedule", tags=["refill"])
-async def get_refill_schedule():
+@limiter.limit("30/minute")
+async def get_refill_schedule(request: Request):
     """
-    Get refill schedule based on user's scan history.
-    In production: uses Supabase scan_history table to predict refill dates.
+    Get refill schedule based on user's scan history via VerificationRepository.
     """
-    # In-memory: return schedules from actual verifications
-    from routers.verify import _verifications
-    from datetime import datetime, timedelta
+    from routers.verify import verification_repo
+    from datetime import datetime
 
     schedules = []
     seen_drugs = set()
 
-    for v in reversed(_verifications):
-        drug = v.get("drug_info", {})
-        name = drug.get("brand_name") or drug.get("generic_name")
-        if name and name not in seen_drugs:
-            seen_drugs.add(name)
-            schedules.append({
-                "drug": name,
-                "ndc": drug.get("ndc"),
-                "last_verified": v.get("id", "")[:8],
-                "verified_at": datetime.now().isoformat(),
-                "confidence": v.get("confidence", 0)
-            })
-        if len(schedules) >= 10:
-            break
+    try:
+        verifs = await verification_repo.list_all(limit=100)
+        for v in verifs:
+            drug = v.get("drug_info", {})
+            name = drug.get("brand_name") or drug.get("generic_name") or v.get("medicine_name_resolved")
+            if name and name != "unknown" and name not in seen_drugs:
+                seen_drugs.add(name)
+                schedules.append({
+                    "drug": name,
+                    "ndc": drug.get("ndc"),
+                    "last_verified": str(v.get("id", ""))[:8],
+                    "verified_at": v.get("created_at", datetime.now().isoformat()),
+                    "confidence": v.get("confidence", 0)
+                })
+            if len(schedules) >= 10:
+                break
+    except Exception as e:
+        logger.error("refill_schedule_fetch_error", error=str(e))
 
     return {"schedules": schedules, "total": len(schedules)}
 
@@ -353,7 +467,8 @@ async def get_refill_schedule():
 # ═══════════════════════════════════════════════════
 
 @app.get("/api/v1/adverse-events/{drug_name}", tags=["adverse-events"])
-async def get_adverse_events(drug_name: str, limit: int = Query(10, le=50)):
+@limiter.limit("30/minute")
+async def get_adverse_events(request: Request, drug_name: str, limit: int = Query(10, le=50)):
     """Query FDA Adverse Event Reporting System (FAERS) for a drug."""
     from services.openfda import get_adverse_events
     events = await get_adverse_events(drug_name, limit=limit, api_key=settings.openfda_api_key)
@@ -369,7 +484,8 @@ async def get_adverse_events(drug_name: str, limit: int = Query(10, le=50)):
 # ═══════════════════════════════════════════════════
 
 @app.post("/api/v1/ai/explain-interaction", tags=["ai"])
-async def ai_explain_interaction(drug_a: str, drug_b: str, known_effect: str = ""):
+@limiter.limit("20/minute")
+async def ai_explain_interaction(request: Request, drug_a: str, drug_b: str, known_effect: str = ""):
     """Use Groq/Llama to generate a patient-friendly explanation of a drug interaction."""
     from services.groq_ai import ai_explain_interaction
     result = await ai_explain_interaction(drug_a, drug_b, known_effect)
@@ -379,7 +495,8 @@ async def ai_explain_interaction(drug_a: str, drug_b: str, known_effect: str = "
 
 
 @app.post("/api/v1/ai/analyze-drug", tags=["ai"])
-async def ai_analyze_drug(drug_name: str):
+@limiter.limit("20/minute")
+async def ai_analyze_drug(request: Request, drug_name: str):
     """Use Groq/Llama for comprehensive drug analysis (food interactions, timing, storage)."""
     from services.groq_ai import ai_analyze_drug
     result = await ai_analyze_drug(drug_name)
@@ -393,7 +510,8 @@ async def ai_analyze_drug(drug_name: str):
 # ═══════════════════════════════════════════════════
 
 @app.post("/api/v1/agents/verify", tags=["agents"])
-async def agent_verify(barcode: str, drug_names: list[str] = Query(default=[]),
+@limiter.limit("10/minute")
+async def agent_verify(request: Request, barcode: str, drug_names: list[str] = Query(default=[]),
                         patient_age: int = None, patient_weight: float = None,
                         kidney_function: str = None):
     """

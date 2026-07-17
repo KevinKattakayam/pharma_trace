@@ -8,6 +8,10 @@ async def fetch_with_timeout(coro, seconds: float, name: str) -> dict:
     try:
         # asyncio.wait_for is available in older Pythons, asyncio.timeout in 3.11+
         result = await asyncio.wait_for(coro, timeout=seconds)
+        if isinstance(result, dict) and result.get("error"):
+            return {"source": name, "error": result.get("error"), "data": None}
+        if isinstance(result, list) and any(isinstance(r, dict) and r.get("error") for r in result):
+            return {"source": name, "error": "SERVICE_UNAVAILABLE", "data": None}
         return {"source": name, "error": None, "data": result}
     except asyncio.TimeoutError:
         return {"source": name, "error": "timeout", "data": None}
@@ -29,11 +33,11 @@ async def parallel_lookup(ndc: str, location: dict = None) -> dict:
     settings = get_settings()
     
     # DrugBank CE lookup via Local SQLite
-    async def drugbank_ce_lookup(identifier: str):
+    def _sync_drugbank_ce_lookup(identifier: str):
         import sqlite3
         from pathlib import Path
         db_path = Path(__file__).parent.parent / "data" / "drugbank_ce.db"
-        if not db_path.exists():
+        if not db_path.exists() or db_path.stat().st_size == 0:
             return None
             
         try:
@@ -65,6 +69,10 @@ async def parallel_lookup(ndc: str, location: dict = None) -> dict:
         except Exception as e:
             logger.error(f"DrugBank Local DB Error: {e}")
         return None
+        
+    async def drugbank_ce_lookup(identifier: str):
+        import asyncio
+        return await asyncio.to_thread(_sync_drugbank_ce_lookup, identifier)
         
     tasks = [
         fetch_with_timeout(lookup_by_ndc(ndc, api_key=settings.openfda_api_key), 3.0, "openfda"),

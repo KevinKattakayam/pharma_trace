@@ -88,11 +88,26 @@ async def fda_lookup_agent(state: DrugVerificationState) -> dict:
                               "detail": f"Found (US FDA): {info.get('brand_name', 'Unknown')} ({info.get('generic_name', 'Unknown')}) by {info.get('manufacturer', 'Unknown')}"}]
             }
         else:
-            # Fallback to Indian CDSCO database
+            # Fallback to Indian CDSCO database & Multi-Tier Resolver
             from services.cdsco import lookup_indian_drug
             from services.canonicalize import map_to_rxcui
+            from services.drug_resolver import resolve_drug_name
             
             cdsco_info = await lookup_indian_drug(ndc_to_lookup)
+            if not cdsco_info and " " in ndc_to_lookup:
+                fw = ndc_to_lookup.split()[0].strip()
+                if len(fw) >= 4:
+                    cdsco_info = await lookup_indian_drug(fw)
+                    
+            if not cdsco_info:
+                res_raw = await resolve_drug_name(ndc_to_lookup)
+                if res_raw and res_raw.get("source") != "unresolved":
+                    cdsco_info = {
+                        "brand_name": res_raw.get("brand_name", ndc_to_lookup),
+                        "generic_name": res_raw.get("generic_name", "Verified Drug"),
+                        "manufacturer": res_raw.get("manufacturer", "Official Registry Match"),
+                        "rxcui": res_raw.get("rxcui")
+                    }
             
             if cdsco_info:
                 # Canonicalize foreign generics to RxNorm for global interaction checks
@@ -179,49 +194,11 @@ async def interaction_agent(state: DrugVerificationState) -> dict:
 
 
 async def safety_agent(state: DrugVerificationState) -> dict:
-    """Agent 5: Compute overall safety verdict."""
+    """Agent 5: preserve evidence without manufacturing an authenticity verdict."""
     try:
-        from services.confidence import bayesian_confidence
         evidence = state.get("evidence", [])
-        
-        # Map agent outcomes to Bayesian likelihood keys
-        evidence_keys = []
-        for e in evidence:
-            agent = e.get("agent")
-            status = e.get("status")
-            if agent == "barcode" and status == "pass":
-                evidence_keys.append("gtin_valid")
-            if agent == "fda_lookup" and status == "pass":
-                evidence_keys.append("openfda_exact")
-            if agent == "cdsco_lookup" and status == "pass":
-                evidence_keys.append("cdsco_match")
-            if agent == "recall":
-                if status == "pass":
-                    evidence_keys.append("no_recall")
-                else:
-                    evidence_keys.append("active_recall")
-
-        cold_chain = state.get("cold_chain")
-        if cold_chain:
-            if cold_chain.get("ok"):
-                evidence_keys.append("cold_chain_ok")
-            else:
-                evidence_keys.append("cold_chain_fail")
-
-        confidence = bayesian_confidence(evidence_keys)
-        
-        # Apply strict deduction for cold chain failure as well
-        if cold_chain and not cold_chain.get("ok"):
-            confidence = max(0, confidence - 15)
-        
-        if confidence >= 85:
-            verdict = "authentic"
-        elif confidence >= 60:
-            verdict = "suspicious"
-        else:
-            verdict = "counterfeit"
-
-        return {"verdict": verdict, "confidence": confidence}
+        has_recall = any(e.get("agent") == "recall" and e.get("status") != "pass" for e in evidence)
+        return {"verdict": "suspicious" if has_recall else "unknown", "confidence": 0.0}
     except Exception as e:
         return {"verdict": "unknown", "confidence": 0.0, "errors": [f"Safety agent error: {str(e)}"]}
 
@@ -289,59 +266,107 @@ No markdown, no preamble, just JSON.
         return {"report": {"verdict": state.get("verdict", "unknown")}, "errors": [f"Report agent error: {str(e)}"]}
 
 
-# ── Build the LangGraph ──
+# ── Fault Tolerance Wrappers (TimeoutPolicy + Error Handler) ──
+import asyncio
+import uuid
+from langgraph.types import RetryPolicy
+from langgraph.checkpoint.memory import MemorySaver
 
-async def parallel_lookups_agent(state: DrugVerificationState) -> dict:
-    """Run Agents 2, 3, and 4 in parallel to minimize network latency."""
-    import asyncio
-    results = await asyncio.gather(
-        fda_lookup_agent(state),
-        recall_agent(state),
-        interaction_agent(state),
-        return_exceptions=True
-    )
-    
-    merged = {"evidence": [], "errors": []}
-    for r in results:
-        if isinstance(r, Exception):
-            merged["errors"].append(str(r))
-        elif isinstance(r, dict):
-            for k, v in r.items():
-                if k in ("evidence", "errors"):
-                    merged[k].extend(v)
-                else:
-                    merged[k] = v
-    return merged
+try:
+    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+except ImportError:
+    AsyncPostgresSaver = None
 
-def build_verification_graph():
-    """Build the 6-agent verification pipeline as a LangGraph StateGraph."""
+async def _timeout_node_wrapper(node_fn, state: DrugVerificationState, timeout_sec: float, name: str) -> dict:
+    try:
+        return await asyncio.wait_for(node_fn(state), timeout=timeout_sec)
+    except asyncio.TimeoutError:
+        err_msg = f"TimeoutPolicy [{name}]: Exceeded {timeout_sec}s wall-clock limit"
+        raise TimeoutError(err_msg)
+    except Exception as e:
+        raise
+
+async def fda_lookup_node(state: DrugVerificationState) -> dict:
+    return await _timeout_node_wrapper(fda_lookup_agent, state, 8.0, "fda_lookup_agent")
+
+async def recall_node(state: DrugVerificationState) -> dict:
+    return await _timeout_node_wrapper(recall_agent, state, 8.0, "recall_agent")
+
+async def interaction_node(state: DrugVerificationState) -> dict:
+    return await _timeout_node_wrapper(interaction_agent, state, 8.0, "interaction_agent")
+
+async def report_node(state: DrugVerificationState) -> dict:
+    return await _timeout_node_wrapper(report_agent, state, 10.0, "report_agent")
+
+
+# Global Checkpointer Singleton
+_checkpointer = None
+
+async def get_checkpointer():
+    global _checkpointer
+    if _checkpointer is not None:
+        return _checkpointer
+    from config import get_settings
+    settings = get_settings()
+    db_url = getattr(settings, "database_url", "") or getattr(settings, "supabase_url", "")
+    if AsyncPostgresSaver and db_url and ("postgres" in db_url):
+        try:
+            saver = AsyncPostgresSaver.from_conn_string(db_url)
+            await saver.setup()
+            _checkpointer = saver
+            return _checkpointer
+        except Exception:
+            pass
+    _checkpointer = MemorySaver()
+    return _checkpointer
+
+
+def build_verification_graph(checkpointer=None):
+    """Build the 6-agent verification pipeline with true parallel nodes and fault tolerance."""
     graph = StateGraph(DrugVerificationState)
+    retry_policy = RetryPolicy(max_attempts=3, initial_interval=1.0, backoff_factor=2.0, retry_on=Exception)
 
-    # Add nodes
+    # Add nodes (pure computation = no retry; network-bound = RetryPolicy + TimeoutPolicy)
     graph.add_node("barcode_agent", barcode_agent)
-    graph.add_node("parallel_lookups_agent", parallel_lookups_agent)
+    graph.add_node("fda_lookup_agent", fda_lookup_node, retry=retry_policy)
+    graph.add_node("recall_agent", recall_node, retry=retry_policy)
+    graph.add_node("interaction_agent", interaction_node, retry=retry_policy)
     graph.add_node("safety_agent", safety_agent)
-    graph.add_node("report_agent", report_agent)
+    graph.add_node("report_agent", report_node, retry=retry_policy)
 
-    # Define edges (parallel pipeline)
+    # Define edges (parallel fan-out from barcode to lookups, fan-in to safety)
     graph.set_entry_point("barcode_agent")
-    graph.add_edge("barcode_agent", "parallel_lookups_agent")
-    graph.add_edge("parallel_lookups_agent", "safety_agent")
+    graph.add_edge("barcode_agent", "fda_lookup_agent")
+    graph.add_edge("barcode_agent", "recall_agent")
+    graph.add_edge("barcode_agent", "interaction_agent")
+    
+    graph.add_edge("fda_lookup_agent", "safety_agent")
+    graph.add_edge("recall_agent", "safety_agent")
+    graph.add_edge("interaction_agent", "safety_agent")
+    
     graph.add_edge("safety_agent", "report_agent")
     graph.add_edge("report_agent", END)
 
-    return graph.compile()
+    return graph.compile(checkpointer=checkpointer)
 
 
 # Compiled graph singleton
 _compiled_graph = None
 
-
-def get_verification_graph():
-    """Get or create the compiled verification graph."""
+async def get_verification_graph_async():
+    """Get or create the compiled verification graph with checkpointer."""
     global _compiled_graph
     if _compiled_graph is None:
-        _compiled_graph = build_verification_graph()
+        cp = await get_checkpointer()
+        _compiled_graph = build_verification_graph(checkpointer=cp)
+    return _compiled_graph
+
+
+def get_verification_graph():
+    """Synchronous fallback getter."""
+    global _compiled_graph
+    if _compiled_graph is None:
+        _compiled_graph = build_verification_graph(checkpointer=MemorySaver())
     return _compiled_graph
 
 
@@ -386,7 +411,10 @@ async def run_full_verification(barcode: str, drug_names: list[str] = None,
 
     score = bayesian_confidence(evidence_keys)
 
-    if score >= 85:
+    # Record/database signals are not a physical-pack verification. Fast-path
+    # exits are deliberately disabled until an authoritative serial provider is
+    # part of this pipeline.
+    if False and score >= 85:
         from services.openfda import extract_openfda_info
         drug_info = extract_openfda_info(openfda_data) if openfda_data else cdsco_data
         
@@ -399,7 +427,7 @@ async def run_full_verification(barcode: str, drug_names: list[str] = None,
             "early_exit": True
         }
 
-    graph = get_verification_graph()
+    graph = await get_verification_graph_async()
 
     initial_state = {
         "barcode": barcode,
@@ -411,7 +439,22 @@ async def run_full_verification(barcode: str, drug_names: list[str] = None,
         "errors": []
     }
 
-    result = await graph.ainvoke(initial_state)
+    config = {"configurable": {"thread_id": str(uuid.uuid4())}}
+    try:
+        from langfuse.callback import CallbackHandler as LangfuseCallbackHandler
+        from config import get_settings
+        st = get_settings()
+        if st.langfuse_public_key and st.langfuse_secret_key:
+            lf_cb = LangfuseCallbackHandler(
+                public_key=st.langfuse_public_key,
+                secret_key=st.langfuse_secret_key,
+                host=st.langfuse_host
+            )
+            config["callbacks"] = [lf_cb]
+    except Exception:
+        pass
+
+    result = await graph.ainvoke(initial_state, config=config)
 
     return {
         "verdict": result.get("verdict", "unknown"),

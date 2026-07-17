@@ -74,7 +74,7 @@ async def clinic_login(req: ClinicLoginRequest):
         import jwt
         from config import get_settings
         settings = get_settings()
-        secret = getattr(settings, 'jwt_secret', 'mock_secret_key_for_development')
+        secret = settings.jwt_secret
         
         # Issue token with 24h expiration
         from datetime import datetime, timedelta, timezone

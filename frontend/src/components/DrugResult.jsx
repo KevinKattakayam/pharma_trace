@@ -123,6 +123,11 @@ export default function DrugResult({ data, onRecheck }) {
       <div className={`card card--${vc}`} style={{ padding: '2rem' }}>
         {/* Header Section */}
         <div className="drug-result__header">
+          {data.requires_human_review && (
+            <div className="safety-review-banner" role="alert">
+              <strong>Review required.</strong> This result matches available records only; it does not prove the physical medicine pack is genuine. Confirm with a pharmacist, manufacturer, or authorised supplier before dispensing or taking it.
+            </div>
+          )}
           {data.expiry_info?.status === 'expired' && (
             <div style={{ 
               background: 'var(--danger)', color: 'white', padding: '1rem', 
@@ -365,4 +370,3 @@ export default function DrugResult({ data, onRecheck }) {
     </div>
   );
 }
-

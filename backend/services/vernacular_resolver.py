@@ -18,29 +18,14 @@ from config import get_settings
 from services.supabase import get_supabase
 from services.translation import contains_non_latin, resolve_script_to_latin
 
-# ═══════════════════════════════════════════════════════════════
-# In-memory cache — avoids repeated DB hits for hot queries
-# ═══════════════════════════════════════════════════════════════
-
-_alias_cache: dict = {}
-_cache_timestamp: float = 0
-CACHE_TTL = 3600  # 1 hour
+async def _cache_get(key: str) -> Optional[dict]:
+    from services.cache_manager import get_cache
+    return await get_cache().get(f"alias:{key}")
 
 
-def _cache_get(key: str) -> Optional[dict]:
-    global _cache_timestamp
-    if (time.time() - _cache_timestamp) > CACHE_TTL:
-        _alias_cache.clear()
-        _cache_timestamp = time.time()
-        return None
-    return _alias_cache.get(key)
-
-
-def _cache_set(key: str, value: dict):
-    global _cache_timestamp
-    if not _cache_timestamp:
-        _cache_timestamp = time.time()
-    _alias_cache[key] = value
+async def _cache_set(key: str, value: dict):
+    from services.cache_manager import get_cache
+    await get_cache().set(f"alias:{key}", value, ttl_seconds=3600)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -125,11 +110,9 @@ async def _db_fuzzy_match(query_lower: str) -> Optional[dict]:
 # Layer 2 — Seeding pipelines (called externally, not in resolve path)
 # ═══════════════════════════════════════════════════════════════
 
-async def seed_from_rxnorm(brand_name: str):
-    """Pipeline A: Seed alias from RxNorm brand-to-generic lookup."""
+async def seed_from_rxnorm(brand_name: str) -> Optional[dict]:
+    """Pipeline A: Seed and resolve alias from RxNorm brand-to-generic lookup."""
     db = get_supabase()
-    if not db.available:
-        return
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -138,22 +121,22 @@ async def seed_from_rxnorm(brand_name: str):
                 params={"name": brand_name, "search": "1"}
             )
             if r.status_code != 200:
-                return
+                return None
 
             rxcui = r.json().get("idGroup", {}).get("rxnormId", [None])
             if not rxcui or not rxcui[0]:
-                return
+                return None
             rxcui = rxcui[0]
 
             props = await client.get(
                 f"https://rxnav.nlm.nih.gov/REST/rxcui/{rxcui}/properties.json"
             )
             if props.status_code != 200:
-                return
+                return None
 
             canonical = props.json().get("properties", {}).get("name")
             if not canonical:
-                return
+                return None
 
             ingredients_resp = await client.get(
                 f"https://rxnav.nlm.nih.gov/REST/rxcui/{rxcui}/related.json",
@@ -165,18 +148,75 @@ async def seed_from_rxnorm(brand_name: str):
                 if groups and groups[0].get("conceptProperties"):
                     ingredients = [g["name"] for g in groups[0]["conceptProperties"]]
 
-            await db.insert("vernacular_aliases", {
-                "drug_alias": brand_name.strip().lower(),
+            res_dict = {
                 "canonical_name": canonical,
                 "active_ingredients": ingredients,
-                "language_code": "en",
-                "alias_type": "brand",
-                "source": "rxnorm",
-                "confidence": 1.0,
-                "verified": True
-            }, upsert=True)
+                "source": "rxnorm_api",
+                "confidence": 1.0
+            }
+
+            try:
+                await db.insert("vernacular_aliases", {
+                    "drug_alias": brand_name.strip().lower(),
+                    "canonical_name": canonical,
+                    "active_ingredients": ingredients,
+                    "language_code": "en",
+                    "alias_type": "brand",
+                    "source": "rxnorm",
+                    "confidence": 1.0,
+                    "verified": True
+                }, upsert=True)
+            except Exception:
+                pass
+
+            return res_dict
     except Exception as e:
-        print(f"[VernacularResolver] RxNorm seed failed for '{brand_name}': {e}")
+        import structlog
+        structlog.get_logger().error("rxnorm_lookup_failed", brand_name=brand_name, error=str(e))
+    return None
+
+
+async def _openfda_live_lookup(brand_name: str) -> Optional[dict]:
+    """Live lookup against OpenFDA labels database."""
+    try:
+        from services.openfda import lookup_by_name
+        fda_res = await lookup_by_name(brand_name)
+        if fda_res:
+            generic_name = fda_res.get("generic_name", [""])[0] if isinstance(fda_res.get("generic_name"), list) else fda_res.get("generic_name", "")
+            if not generic_name:
+                generic_name = brand_name
+            active_ingredients = fda_res.get("active_ingredient", [generic_name])
+            if isinstance(active_ingredients, str):
+                active_ingredients = [active_ingredients]
+            elif isinstance(active_ingredients, list):
+                active_ingredients = [str(i) for i in active_ingredients if i]
+                
+            res_dict = {
+                "canonical_name": generic_name.title(),
+                "active_ingredients": [i.title() for i in active_ingredients if i],
+                "source": "openfda_api",
+                "confidence": 0.98
+            }
+            
+            db = get_supabase()
+            try:
+                await db.insert("vernacular_aliases", {
+                    "drug_alias": brand_name.strip().lower(),
+                    "canonical_name": res_dict["canonical_name"],
+                    "active_ingredients": res_dict["active_ingredients"],
+                    "language_code": "en",
+                    "alias_type": "brand",
+                    "source": "openfda",
+                    "confidence": 0.98,
+                    "verified": True
+                }, upsert=True)
+            except Exception:
+                pass
+                
+            return res_dict
+    except Exception:
+        pass
+    return None
 
 
 async def learn_from_verification(query: str, brand_name: str, generic_name: str,
@@ -278,6 +318,24 @@ Rules:
 - active_ingredients must be real pharmacological compounds"""
 
 
+def _clean_json_loads(text: str) -> dict:
+    """Robustly parse JSON even if wrapped in Markdown code blocks."""
+    if not text:
+        return {}
+    clean = text.strip()
+    if clean.startswith("```json"):
+        clean = clean[7:]
+    if clean.startswith("```"):
+        clean = clean[3:]
+    if clean.endswith("```"):
+        clean = clean[:-3]
+    clean = clean.strip()
+    try:
+        return json.loads(clean)
+    except json.JSONDecodeError:
+        return {}
+
+
 async def _resolve_via_gemini(query: str) -> Optional[dict]:
     """Model 1: Gemini 2.0 Flash — best for Indian scripts, free tier."""
     settings = get_settings()
@@ -302,9 +360,9 @@ async def _resolve_via_gemini(query: str) -> Optional[dict]:
 
             data = resp.json()
             text = data["candidates"][0]["content"]["parts"][0]["text"]
-            result = json.loads(text)
+            result = _clean_json_loads(text)
 
-            if not result.get("canonical_name"):
+            if not result or not result.get("canonical_name"):
                 return None
             if result.get("confidence", 0) < 0.75:
                 return None
@@ -340,9 +398,9 @@ async def _resolve_via_groq_llama(query: str) -> Optional[dict]:
 
             data = resp.json()
             content = data["choices"][0]["message"]["content"]
-            result = json.loads(content)
+            result = _clean_json_loads(content)
 
-            if not result.get("canonical_name"):
+            if not result or not result.get("canonical_name"):
                 return None
             if result.get("confidence", 0) < 0.75:
                 return None
@@ -384,9 +442,9 @@ async def _resolve_via_gpt4o(query: str) -> Optional[dict]:
 
             data = resp.json()
             content = data["choices"][0]["message"]["content"]
-            result = json.loads(content)
+            result = _clean_json_loads(content)
 
-            if not result.get("canonical_name"):
+            if not result or not result.get("canonical_name"):
                 return None
             if result.get("confidence", 0) < 0.7:
                 return None
@@ -478,7 +536,7 @@ async def resolve_drug_query(query: str) -> dict:
     cache_key = query_clean.lower()
 
     # 1. In-memory cache
-    cached = _cache_get(cache_key)
+    cached = await _cache_get(cache_key)
     if cached:
         return cached
 
@@ -488,24 +546,40 @@ async def resolve_drug_query(query: str) -> dict:
 
     # Check cache again with transliterated key
     if latin_key != cache_key:
-        cached = _cache_get(latin_key)
+        cached = await _cache_get(latin_key)
         if cached:
-            _cache_set(cache_key, cached)  # Cache original key too
+            await _cache_set(cache_key, cached)  # Cache original key too
             return cached
 
     # 3. Database exact match
     result = await _db_exact_match(latin_key)
     if result:
-        _cache_set(cache_key, result)
+        await _cache_set(cache_key, result)
         if latin_key != cache_key:
-            _cache_set(latin_key, result)
+            await _cache_set(latin_key, result)
         return result
 
     # 4. Database trigram fuzzy match
     result = await _db_fuzzy_match(latin_key)
     if result:
-        _cache_set(cache_key, result)
+        await _cache_set(cache_key, result)
         return result
+
+    # 4.5. Live authoritative lookup via NLM RxNorm API
+    rxnorm_res = await seed_from_rxnorm(latin_key)
+    if rxnorm_res:
+        await _cache_set(cache_key, rxnorm_res)
+        if latin_key != cache_key:
+            await _cache_set(latin_key, rxnorm_res)
+        return rxnorm_res
+
+    # 4.6. Live authoritative lookup via OpenFDA API
+    fda_res = await _openfda_live_lookup(latin_key)
+    if fda_res:
+        await _cache_set(cache_key, fda_res)
+        if latin_key != cache_key:
+            await _cache_set(latin_key, fda_res)
+        return fda_res
 
     # 5. AI cascade as last resort
     ai_result = await _resolve_via_ai_cascade(
@@ -518,7 +592,7 @@ async def resolve_drug_query(query: str) -> dict:
             "source": f"ai_{ai_result.get('_model', 'resolved')}",
             "confidence": ai_result.get("confidence", 0.8)
         }
-        _cache_set(cache_key, result)
+        await _cache_set(cache_key, result)
         # Persist to DB so this query never hits AI again
         await _cache_ai_result(query_clean, ai_result)
         return result

@@ -1,47 +1,34 @@
-import math
 from typing import Tuple, List, Optional
 from models.schemas import EvidenceItem
 
-PRIORS = {
-    "base": 0.5,          # prior: 50% chance any scanned drug is legit
-}
-
-LIKELIHOODS = {
-    "openfda_exact":    (0.98, 0.02),  # P(evidence|real), P(evidence|fake)
-    "openfda_partial":  (0.75, 0.25),
-    "no_recall":        (0.95, 0.40),
-    "active_recall":    (0.02, 0.80),
-    "ocr_matches_fda":  (0.90, 0.10),
-    "cold_chain_ok":    (0.80, 0.50),
-    "cold_chain_fail":  (0.10, 0.90),
-    "rxnav_confirmed":  (0.85, 0.30),
-    "gtin_valid":       (0.90, 0.20),
-    "cdsco_match":      (0.88, 0.15),
-    "drugbank_match":   (0.85, 0.20),
-}
-
 def bayesian_confidence(evidence_keys: list[str]) -> int:
-    """
-    Calculates the confidence score that a drug is legitimate using a Bayesian log-odds update.
-    Returns an integer from 0 to 100.
-    """
-    log_odds = math.log(PRIORS["base"] / (1 - PRIORS["base"]))
-    for key in evidence_keys:
-        if key in LIKELIHOODS:
-            p_real, p_fake = LIKELIHOODS[key]
-            log_odds += math.log(p_real / p_fake)
-    
-    # Sigmoid function to convert log odds back to probability
-    prob = 1 / (1 + math.exp(-log_odds))
-    return round(prob * 100)
+    """Deprecated compatibility function.
 
-def determine_verdict(confidence: float) -> str:
-    """Determine the final verdict string based on confidence score."""
-    if confidence >= 80:
+    No labelled validation set exists for the former likelihood values, so this
+    service no longer manufactures a probability of authenticity from rules.
+    """
+    return 0
+
+def determine_verdict(
+    confidence: float,
+    *,
+    serial_verification: Optional[bool] = None,
+    no_active_recall: Optional[bool] = None,
+) -> str:
+    """Return a safety-first result, not an unvalidated probability claim.
+
+    Registry and barcode matches establish that a *record* may exist; they cannot
+    establish that a physical pack is genuine. ``authentic`` and ``counterfeit``
+    are therefore reserved for an authoritative manufacturer/distributor serial
+    response. All other cases require review when a decision matters.
+    """
+    if serial_verification is True and no_active_recall is True and confidence >= 80:
         return "authentic"
-    elif confidence >= 50:
+    if serial_verification is False:
+        return "counterfeit"
+    if no_active_recall is False or confidence < 50:
         return "suspicious"
-    return "counterfeit"
+    return "unknown"
 
 def compute_confidence(
     barcode_valid: bool,
@@ -52,66 +39,56 @@ def compute_confidence(
     report_history_clean: bool = True
 ) -> Tuple[float, List[EvidenceItem]]:
     evidence = []
-    keys = []
-    
     if barcode_valid:
-        keys.append("gtin_valid")
+        evidence.append(EvidenceItem(check="gtin_validation", status="pass", description="Barcode check digit is structurally valid; this is not an authenticity check.", weight=0.0))
     
     if openfda_match:
-        keys.append("openfda_exact")
         evidence.append(EvidenceItem(
             check="openfda_match",
             status="pass",
             description="Verified against live OpenFDA database",
-            weight=30.0
+            weight=0.0
         ))
     else:
         evidence.append(EvidenceItem(
             check="openfda_match",
             status="fail",
             description="NDC not found in OpenFDA database",
-            weight=30.0
+            weight=0.0
         ))
         
-    if recall_status:
-        keys.append("no_recall")
+    if recall_status is True:
         evidence.append(EvidenceItem(
             check="recall_check",
             status="pass",
             description="No active recalls found",
-            weight=20.0
+            weight=0.0
         ))
-    else:
-        keys.append("active_recall")
+    elif recall_status is False:
         evidence.append(EvidenceItem(
             check="recall_check",
             status="fail",
             description="ACTIVE RECALL DETECTED",
-            weight=20.0
+            weight=0.0
         ))
+    else:
+        evidence.append(EvidenceItem(check="recall_check", status="warn", description="Recall coverage is unavailable or incomplete.", weight=0.0))
 
-    # Cold chain penalty logic
+    # Local weather is contextual information, not evidence of pack authenticity.
     if cold_chain_ok is True:
-        keys.append("cold_chain_ok")
         evidence.append(EvidenceItem(
             check="cold_chain",
             status="pass",
-            description="Local weather meets storage requirements",
-            weight=10.0
+            description="Local conditions are compatible with the labelled storage range; this does not verify product handling history.",
+            weight=0.0
         ))
     elif cold_chain_ok is False:
-        keys.append("cold_chain_fail")
         evidence.append(EvidenceItem(
             check="cold_chain",
             status="fail",
-            description="WARNING: Local weather exceeds safe storage temperature",
-            weight=10.0
+            description="Local conditions may exceed the labelled storage range; verify the product's actual handling history with the supplier.",
+            weight=0.0
         ))
         
-    confidence_score = bayesian_confidence(keys)
-    
-    # Direct penalty if cold chain fails explicitly
-    if cold_chain_ok is False:
-        confidence_score = max(0, confidence_score - 15)
-        
-    return float(confidence_score), evidence
+    # Only an authoritative serial response may populate authentication assurance.
+    return 0.0, evidence

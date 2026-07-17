@@ -8,12 +8,9 @@ import uuid
 import math
 from fastapi import APIRouter, HTTPException
 from models.schemas import PharmacyReviewRequest
+from services.supabase import get_supabase
 
 router = APIRouter(prefix="/pharmacies", tags=["pharmacies"])
-
-# In-memory pharmacy store — populated by user registrations or API
-_pharmacies: list[dict] = []
-_reviews: list[dict] = []
 
 
 def _haversine_km(lat1, lng1, lat2, lng2):
@@ -26,16 +23,20 @@ def _haversine_km(lat1, lng1, lat2, lng2):
 
 
 async def _compute_trust_score(pharmacy_id: str) -> dict:
-    """Compute anti-gaming trust score from real review and verification data in Supabase."""
+    """Compute anti-gaming trust score from real review and verification data in Supabase with TTL caching and parallel batching."""
     from services.supabase import get_supabase
+    from services.cache_manager import get_cache
     import math
     from datetime import datetime, timezone, timedelta
     import asyncio
-    db = get_supabase()
     
-    if not db.available:
-        return {"trust_score": None, "trust_breakdown": None}
-        
+    cache = get_cache()
+    cache_key = f"trust_score:{pharmacy_id}"
+    cached = await cache.get(cache_key)
+    if cached:
+        return cached
+
+    db = get_supabase()
     reviews = await db.query("pharmacy_reviews", filters={"pharmacy_id": pharmacy_id}, limit=500)
     if not reviews:
         reviews = []
@@ -47,14 +48,25 @@ async def _compute_trust_score(pharmacy_id: str) -> dict:
     valid_reviews = []
     flagged_reviews_to_insert = []
     
+    # Parallel batch fetch user account history to eliminate N+1 sequential loop queries
+    unique_users = {r.get("user_id") for r in reviews if r.get("user_id")}
+    user_history_map = {}
+    if unique_users:
+        user_list = list(unique_users)
+        verif_results = await asyncio.gather(*[
+            db.query("safety_check_log", filters={"user_id": uid}, limit=3) for uid in user_list
+        ], return_exceptions=True)
+        for uid, res in zip(user_list, verif_results):
+            user_history_map[uid] = len(res) if isinstance(res, list) else 3
+    
     for r in reviews:
         suspicious = False
         reason = ""
         
         user_id = r.get("user_id")
         if user_id:
-            user_verifs = await db.query("safety_check_log", filters={"user_id": user_id}, limit=3)
-            if len(user_verifs) < 3:
+            verif_count = user_history_map.get(user_id, 3)
+            if verif_count < 3:
                 suspicious = True
                 reason = "Low account history (<3 verifications)"
                 
@@ -118,7 +130,7 @@ async def _compute_trust_score(pharmacy_id: str) -> dict:
             
     trust_score = pass_rate_score + review_score + recency_boost
     
-    return {
+    res = {
         "trust_score": round(trust_score, 1),
         "trust_breakdown": {
             "pass_rate_score": round(pass_rate_score, 1),
@@ -128,6 +140,8 @@ async def _compute_trust_score(pharmacy_id: str) -> dict:
             "flagged_reviews": len(reviews) - len(valid_reviews)
         }
     }
+    await cache.set(cache_key, res, ttl_seconds=900)
+    return res
 
 
 @router.get("/nearby")
@@ -137,18 +151,29 @@ async def get_nearby_pharmacies(lat: float = 19.076, lng: float = 72.877, radius
     Returns pharmacies within radius (meters). Empty if none registered.
     In production: uses PostGIS ST_DWithin via Supabase.
     """
+    import asyncio
+    db = get_supabase()
     radius_km = radius / 1000
+    
+    # Use the geo_query wrapper
+    nearby_raw = await db.geo_query("pharmacies", lat, lng, radius)
     nearby = []
 
-    for p in _pharmacies:
-        dist = _haversine_km(lat, lng, p.get("lat", 0), p.get("lng", 0))
-        if dist <= radius_km:
-            trust = await _compute_trust_score(p["id"])
-            nearby.append({
-                **p,
-                "distance_m": round(dist * 1000),
-                **trust
-            })
+    # Compute all trust scores concurrently using asyncio.gather
+    trust_scores = await asyncio.gather(*[_compute_trust_score(p["id"]) for p in nearby_raw], return_exceptions=True)
+
+    for p, trust in zip(nearby_raw, trust_scores):
+        dist = p.get("distance_m")
+        if dist is None:
+            dist_km = _haversine_km(lat, lng, p.get("lat", 0), p.get("lng", 0))
+            dist = round(dist_km * 1000)
+            
+        t_data = trust if isinstance(trust, dict) else {"trust_score": 100.0, "trust_breakdown": None}
+        nearby.append({
+            **p,
+            "distance_m": dist,
+            **t_data
+        })
 
     nearby.sort(key=lambda x: x.get("distance_m", 999999))
     return {"pharmacies": nearby, "total": len(nearby), "radius_m": radius}
@@ -158,12 +183,14 @@ async def get_nearby_pharmacies(lat: float = 19.076, lng: float = 72.877, radius
 async def register_pharmacy(name: str, address: str, lat: float, lng: float,
                               city: str = "", country: str = ""):
     """Register a new pharmacy (for community building the database)."""
+    db = get_supabase()
     pharmacy = {
         "id": str(uuid.uuid4()),
         "name": name,
         "address": address,
         "lat": lat,
         "lng": lng,
+        "location": f"POINT({lng} {lat})",
         "city": city,
         "country": country,
         "total_verifications": 0,
@@ -173,17 +200,21 @@ async def register_pharmacy(name: str, address: str, lat: float, lng: float,
         "verified_inventory": [],
         "contact_number": None
     }
-    _pharmacies.append(pharmacy)
+    
+    await db.insert("pharmacies", pharmacy)
     return {"pharmacy": pharmacy, "status": "registered"}
 
 
 @router.get("/{pharmacy_id}/trust-score")
 async def get_trust_score(pharmacy_id: str):
     """Get detailed trust score breakdown for a pharmacy."""
-    pharmacy = next((p for p in _pharmacies if p["id"] == pharmacy_id), None)
-    if not pharmacy:
+    db = get_supabase()
+    pharmacy_res = await db.query("pharmacies", filters={"id": pharmacy_id}, limit=1)
+    
+    if not pharmacy_res:
         raise HTTPException(status_code=404, detail="Pharmacy not found. Register it first via POST /pharmacies/register")
 
+    pharmacy = pharmacy_res[0]
     trust = await _compute_trust_score(pharmacy_id)
     return {**pharmacy, **trust}
 
@@ -193,20 +224,27 @@ async def claim_pharmacy(pharmacy_id: str, contact_number: str, license_number: 
     Request to claim a pharmacy listing.
     Creates a pending claim that must be verified by a clinic admin before going live.
     """
-    pharmacy = next((p for p in _pharmacies if p["id"] == pharmacy_id), None)
-    if not pharmacy:
+    db = get_supabase()
+    pharmacy_res = await db.query("pharmacies", filters={"id": pharmacy_id}, limit=1)
+    
+    if not pharmacy_res:
         raise HTTPException(status_code=404, detail="Pharmacy not found")
         
+    pharmacy = pharmacy_res[0]
     claim_status = pharmacy.get("claim_status")
     if claim_status == "verified":
         raise HTTPException(status_code=400, detail="Pharmacy is already claimed and verified")
     if claim_status == "pending":
         raise HTTPException(status_code=400, detail="A claim is already pending review for this pharmacy")
 
-    pharmacy["claim_status"] = "pending"
-    pharmacy["contact_number"] = contact_number
-    pharmacy["license_number"] = license_number
-    pharmacy["is_claimed"] = False  # Not yet — stays false until admin verifies
+    updates = {
+        "claim_status": "pending",
+        "contact_number": contact_number,
+        "license_number": license_number,
+        "is_claimed": False
+    }
+
+    await db.update("pharmacies", updates, filters={"id": pharmacy_id})
 
     return {
         "status": "pending",
@@ -221,37 +259,52 @@ async def verify_claim(pharmacy_id: str):
     Admin-only: Approve a pending pharmacy claim.
     In production this must be gated behind Depends(get_current_user) with admin role check.
     """
-    pharmacy = next((p for p in _pharmacies if p["id"] == pharmacy_id), None)
-    if not pharmacy:
+    db = get_supabase()
+    pharmacy_res = await db.query("pharmacies", filters={"id": pharmacy_id}, limit=1)
+    
+    if not pharmacy_res:
         raise HTTPException(status_code=404, detail="Pharmacy not found")
 
+    pharmacy = pharmacy_res[0]
     if pharmacy.get("claim_status") != "pending":
         raise HTTPException(status_code=400, detail="No pending claim to verify")
 
-    pharmacy["claim_status"] = "verified"
-    pharmacy["is_claimed"] = True
+    updates = {
+        "claim_status": "verified",
+        "is_claimed": True
+    }
+    
+    await db.update("pharmacies", updates, filters={"id": pharmacy_id})
+    pharmacy.update(updates)
+    
     return {"status": "verified", "pharmacy": pharmacy}
 
 
 @router.put("/{pharmacy_id}/inventory")
 async def update_inventory(pharmacy_id: str, inventory: list[dict]):
     """Publish verified medicine inventory to the directory."""
-    pharmacy = next((p for p in _pharmacies if p["id"] == pharmacy_id), None)
-    if not pharmacy:
+    db = get_supabase()
+    pharmacy_res = await db.query("pharmacies", filters={"id": pharmacy_id}, limit=1)
+    
+    if not pharmacy_res:
         raise HTTPException(status_code=404, detail="Pharmacy not found")
         
+    pharmacy = pharmacy_res[0]
     if pharmacy.get("claim_status") != "verified":
         raise HTTPException(status_code=403, detail="Pharmacy must be claimed and verified before updating inventory")
         
-    pharmacy["verified_inventory"] = inventory
+    await db.update("pharmacies", {"verified_inventory": inventory}, filters={"id": pharmacy_id})
+    
     return {"status": "inventory_updated", "inventory_count": len(inventory)}
 
 
 @router.post("/{pharmacy_id}/review")
 async def submit_review(pharmacy_id: str, request: PharmacyReviewRequest):
     """Submit a pharmacy review with anti-gaming detection."""
-    pharmacy = next((p for p in _pharmacies if p["id"] == pharmacy_id), None)
-    if not pharmacy:
+    db = get_supabase()
+    pharmacy_res = await db.query("pharmacies", filters={"id": pharmacy_id}, limit=1)
+    
+    if not pharmacy_res:
         raise HTTPException(status_code=404, detail="Pharmacy not found")
 
     review_id = str(uuid.uuid4())
@@ -271,7 +324,8 @@ async def submit_review(pharmacy_id: str, request: PharmacyReviewRequest):
         "flagged": flagged,
         "flag_reason": flag_reason,
     }
-    _reviews.append(review)
+    
+    await db.insert("pharmacy_reviews", review)
 
     return {
         "review_id": review_id,

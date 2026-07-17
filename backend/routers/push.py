@@ -1,14 +1,16 @@
-from fastapi import APIRouter, HTTPException, BackgroundTasks
+from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends
 from pydantic import BaseModel
 from config import get_settings
 from pywebpush import webpush, WebPushException
+from dependencies import require_current_user
+from models.schemas import CurrentUser
 
 router = APIRouter(prefix="/push", tags=["push"])
 
 class PushSubscription(BaseModel):
     endpoint: str
     keys: dict
-    user_id: str = "demo-user-123"
+    user_id: str
 
 @router.get("/public-key")
 async def get_public_key():
@@ -16,12 +18,14 @@ async def get_public_key():
     return {"public_key": settings.vapid_public_key}
 
 @router.post("/subscribe")
-async def subscribe(sub: PushSubscription):
+async def subscribe(sub: PushSubscription, current_user: CurrentUser = Depends(require_current_user)):
     """Save a push subscription to Supabase."""
+    if sub.user_id != current_user.user_id and current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="403 Forbidden: Cannot subscribe another user.")
     from services.supabase import get_supabase
     db = get_supabase()
     if not db.available:
-        return {"status": "Database not configured"}
+        raise HTTPException(status_code=503, detail="503 Service Unavailable: Database storage layer disconnected.")
         
     try:
         await db.insert("push_subscriptions", {
@@ -38,24 +42,27 @@ async def subscribe(sub: PushSubscription):
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/notify-refill")
-async def notify_refill(background_tasks: BackgroundTasks):
+async def notify_refill(background_tasks: BackgroundTasks, cron_secret: str = None):
     """Trigger refill notifications via CRON."""
     settings = get_settings()
+    if cron_secret != settings.hmac_daily_secret:
+        raise HTTPException(status_code=401, detail="401 Unauthorized: Invalid CRON trigger secret.")
+
     if not settings.vapid_private_key:
-        return {"status": "VAPID keys not configured"}
+        raise HTTPException(status_code=501, detail="501 Not Implemented: VAPID keys unconfigured.")
 
     from services.supabase import get_supabase
     db = get_supabase()
     if not db.available:
-        return {"status": "Database not configured"}
+        raise HTTPException(status_code=503, detail="503 Service Unavailable: Database disconnected.")
 
-    # Calculate refill dates grouped by user and NDC
-    scan_history = await db.query("scan_history")
+    # Bounded query for recent scans
+    scan_history = await db.query("scan_history", limit=5000)
     
     # Simple grouping
     user_ndc_scans = {}
     for scan in scan_history:
-        uid = scan.get("user_id", "demo-user-123")
+        uid = scan.get("user_id", "anonymous")
         ndc = scan.get("ndc")
         if not ndc: continue
         key = (uid, ndc)
@@ -88,8 +95,8 @@ async def notify_refill(background_tasks: BackgroundTasks):
         # 3-day lookahead filter
         if 0 <= days_until <= 3:
             # Find sub
-            subs = await db.query("push_subscriptions")
-            user_subs = [s for s in subs if s.get("user_id") == uid]
+            subs = await db.query("push_subscriptions", filters={"user_id": uid}, limit=100)
+            user_subs = subs or []
             
             payload = f'{{"title": "Refill Reminder", "body": "Your prescription for {ndc} is running low based on your scan history. Tap to reorder.", "url": "/cabinet"}}'
 
@@ -109,7 +116,8 @@ async def notify_refill(background_tasks: BackgroundTasks):
                         vapid_claims={"sub": settings.vapid_claims_email}
                     )
                 except WebPushException as ex:
-                    print("WebPush Error:", repr(ex))
+                    import structlog
+                    structlog.get_logger().error("webpush_failed", error=repr(ex))
 
             for sub in user_subs:
                 background_tasks.add_task(send_push, sub, payload)

@@ -1,7 +1,19 @@
 from datetime import datetime
 from typing import Optional
-from pydantic import BaseModel, Field
+import base64
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from enum import Enum
+
+
+class StrictRequestModel(BaseModel):
+    """Reject unexpected request fields instead of silently ignoring them."""
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+
+class CurrentUser(BaseModel):
+    user_id: str
+    role: str = "user"
+    clinic_id: Optional[str] = None
 
 
 class VerificationMethod(str, Enum):
@@ -27,6 +39,7 @@ class InteractionSeverity(str, Enum):
 
 
 class RiskLevel(str, Enum):
+    unknown = "unknown"
     low = "low"
     moderate = "moderate"
     high = "high"
@@ -34,42 +47,56 @@ class RiskLevel(str, Enum):
 
 # ── Request schemas ──
 
-class BarcodeVerifyRequest(BaseModel):
-    barcode: str
+class BarcodeVerifyRequest(StrictRequestModel):
+    barcode: str = Field(..., min_length=1, max_length=512)
     location: Optional[dict] = None
     source: Optional[str] = "live"
     verified_at: Optional[str] = None
 
 
-class ImageVerifyRequest(BaseModel):
-    image: str  # base64 encoded
+class ImageVerifyRequest(StrictRequestModel):
+    image: str = Field(..., min_length=16)  # base64 encoded
     extracted_text: Optional[str] = None
     location: Optional[dict] = None
     source: Optional[str] = "live"
     verified_at: Optional[str] = None
 
+    @field_validator("image")
+    @classmethod
+    def validate_image_payload(cls, value: str) -> str:
+        """Reject malformed or excessive image payloads before any AI/API call."""
+        payload = value.split(",", 1)[-1] if value.startswith("data:") else value
+        try:
+            decoded = base64.b64decode(payload, validate=True)
+        except (ValueError, base64.binascii.Error) as exc:
+            raise ValueError("image must be valid base64 data") from exc
+        from config import get_settings
+        if len(decoded) > get_settings().max_image_upload_bytes:
+            raise ValueError("image exceeds the configured upload limit")
+        return value
 
-class InteractionCheckRequest(BaseModel):
+
+class InteractionCheckRequest(StrictRequestModel):
     drugs: list[str] = Field(..., min_length=2, max_length=10)
 
 
-class InteractionsPhotoRequest(BaseModel):
+class InteractionsPhotoRequest(StrictRequestModel):
     image: str  # base64 encoded photo of multiple medicines
 
 
-class SymptomSafetyRequest(BaseModel):
+class SymptomSafetyRequest(StrictRequestModel):
     symptoms: str
     current_medications: list[str]
 
 
-class DosageRequest(BaseModel):
+class DosageRequest(StrictRequestModel):
     age: int = Field(..., ge=0, le=120)
     weight_kg: float = Field(..., ge=1, le=300)
     kidney_function: Optional[str] = None  # "normal", "mild", "moderate", "severe"
     current_dose: Optional[str] = None
 
 
-class ReportRequest(BaseModel):
+class ReportRequest(StrictRequestModel):
     drug_name: str
     barcode: Optional[str] = None
     description: str
@@ -79,17 +106,42 @@ class ReportRequest(BaseModel):
     photo_urls: Optional[list[str]] = None
 
 
-class PharmacyReviewRequest(BaseModel):
+class PharmacyReviewRequest(StrictRequestModel):
     rating: int = Field(..., ge=1, le=5)
     comment: Optional[str] = None
 
 
-class CaregiverLinkRequest(BaseModel):
+class CaregiverLinkRequest(StrictRequestModel):
     code: str
 
 
-class BatchVerifyRequest(BaseModel):
+class BatchVerifyRequest(StrictRequestModel):
     barcodes: list[str] = Field(..., min_length=1, max_length=100)
+
+
+class SafetyCaseCreateRequest(StrictRequestModel):
+    verification_id: Optional[str] = None
+    medicine_name: str = Field(..., min_length=2, max_length=160)
+    batch_number: Optional[str] = Field(default=None, max_length=100)
+    issue_type: str = Field(..., pattern="^(suspected_falsified|recall|quality_defect|storage_concern|adverse_event|other)$")
+    notes: str = Field(..., min_length=10, max_length=2000)
+    quarantined: bool = False
+
+
+class SafetyCaseUpdateRequest(StrictRequestModel):
+    status: str = Field(..., pattern="^(open|triaged|escalated|resolved|dismissed)$")
+    resolution_note: Optional[str] = Field(default=None, max_length=2000)
+
+
+class SafetyCaseResponse(BaseModel):
+    id: str
+    status: str
+    medicine_name: str
+    issue_type: str
+    quarantined: bool
+    created_at: str
+    verification_id: Optional[str] = None
+    resolution_note: Optional[str] = None
 
 
 # ── Response schemas ──
@@ -126,6 +178,9 @@ class VerificationResponse(BaseModel):
     expiry_info: Optional[dict] = None
     shortage: Optional[dict] = None
     ai_generated: bool = False
+    requires_human_review: bool = True
+    verification_scope: str = "record_match_only"
+    data_freshness: Optional[dict] = None
 
 
 class DrugInteraction(BaseModel):
@@ -145,6 +200,8 @@ class InteractionResponse(BaseModel):
     interactions: list[DrugInteraction]
     matrix: list[list[str]]  # severity grid
     ai_generated: bool = False
+    clinical_review_required: bool = True
+    data_source_status: str = "unvalidated_or_incomplete"
 
 
 class DosageAdvice(BaseModel):

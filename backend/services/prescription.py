@@ -95,8 +95,22 @@ Generate one JSON object per drug. Respond with a JSON array only.
         response_format={"type": "json_object"}  # Groq JSON mode
     )
 
-    raw = response.choices[0].message.content
-    parsed = json.loads(raw)
+    raw = response.choices[0].message.content.strip()
+    if raw.startswith("```json"):
+        raw = raw[7:]
+    if raw.startswith("```"):
+        raw = raw[3:]
+    if raw.endswith("```"):
+        raw = raw[:-3]
+    raw = raw.strip()
+    import structlog
+    logger = structlog.get_logger()
+    
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        logger.error("groq_json_decode_failed", raw_sample=raw[:100])
+        return []
 
     # Validate each summary with Pydantic — catches hallucinations
     summaries = []
@@ -106,6 +120,6 @@ Generate one JSON object per drug. Respond with a JSON array only.
             summaries.append(MedicineSummary(**item))
         except Exception as e:
             # Log validation failure but don't crash — partial results are better
-            print(f"Validation failed for {item.get('drug_name')}: {e}")
+            logger.warning("medicine_summary_validation_failed", drug=item.get('drug_name'), error=str(e))
 
     return summaries

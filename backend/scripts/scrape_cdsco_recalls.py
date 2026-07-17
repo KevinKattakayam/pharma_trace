@@ -165,7 +165,7 @@ def _parse_date(text: str):
     return None
 
 
-async def persist_to_supabase(records: list[dict]):
+async def persist_to_supabase(records: list[dict], source_run_id: str = None):
     """Write scraped records to Supabase, skipping duplicates."""
     import sys
     sys.path.insert(0, ".")
@@ -175,6 +175,8 @@ async def persist_to_supabase(records: list[dict]):
 
     if not db.available:
         print("[CDSCO] Supabase not configured — skipping persistence")
+        from services.data_governance import finish_source_run
+        await finish_source_run(source_run_id, status="failed", records_seen=len(records), error_summary="Supabase not configured")
         return
 
     inserted = 0
@@ -211,15 +213,24 @@ async def persist_to_supabase(records: list[dict]):
             print(f"[CDSCO] Upsert failed for {r.get('drug_name')}: {e}")
 
     print(f"[CDSCO] Upserted {inserted} recalls. Logged {errors} parse errors. Aliases seeded.")
+    from services.data_governance import finish_source_run
+    await finish_source_run(source_run_id, status="partial" if errors else "succeeded", records_seen=len(records), records_upserted=inserted)
 
 
 async def main():
     print(f"[CDSCO] Starting recall scrape at {datetime.now(timezone.utc).isoformat()}")
-    records = await scrape_cdsco_recalls()
-    if records:
-        await persist_to_supabase(records)
-    else:
-        print("[CDSCO] No records scraped — check if CDSCO page structure has changed")
+    from services.data_governance import start_source_run, finish_source_run
+    run_id = await start_source_run("CDSCO alerts", CDSCO_RECALLS_URL)
+    try:
+        records = await scrape_cdsco_recalls()
+        if records:
+            await persist_to_supabase(records, run_id)
+        else:
+            print("[CDSCO] No records scraped — check if CDSCO page structure has changed")
+            await finish_source_run(run_id, status="partial", error_summary="No records parsed; source layout may have changed")
+    except Exception as exc:
+        await finish_source_run(run_id, status="failed", error_summary=str(exc)[:1000])
+        raise
     print(f"[CDSCO] Done at {datetime.now(timezone.utc).isoformat()}")
 
 

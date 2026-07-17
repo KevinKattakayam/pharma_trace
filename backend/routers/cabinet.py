@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from typing import List, Optional
 import uuid
@@ -8,6 +8,9 @@ from services.supabase import get_supabase
 from services.drug_resolver import resolve_all_drugs
 from services.interactions import check_interactions_enterprise
 from config import get_settings
+from dependencies import require_current_user
+from models.schemas import CurrentUser
+from services.groq_ai import ai_normalize_conditions
 
 router = APIRouter(prefix="/cabinet", tags=["cabinet", "family"])
 
@@ -24,9 +27,7 @@ class Medicine(BaseModel):
     quantity_remaining: Optional[int] = None
     daily_dose_units: Optional[int] = None
 
-# Fallbacks for graceful degradation
-_family_members = []
-_medicine_cabinet = []
+# Supabase client handles robust local SQLite persistence automatically
 
 COMMON_CONDITIONS_MAP = {
     "high blood pressure": "Hypertension",
@@ -59,7 +60,16 @@ COMMON_CONDITIONS_MAP = {
 }
 
 async def normalize_conditions(conditions: str) -> list:
-    """Normalize free-text conditions using a curated MEDRT string mapping table."""
+    """Normalize free-text conditions using AI, with static map fallback."""
+    # Try AI normalization first for high-quality MED-RT mapping
+    try:
+        ai_result = await ai_normalize_conditions(conditions)
+        if ai_result:
+            return ai_result
+    except Exception:
+        pass
+
+    # Fallback to local heuristic map if AI fails or is offline
     normalized = []
     conds = [c.strip().lower() for c in conditions.replace(" and ", ",").split(",") if c.strip()]
     for c in conds:
@@ -75,7 +85,9 @@ async def normalize_conditions(conditions: str) -> list:
     return normalized
 
 @router.post("/members")
-async def add_family_member(member: FamilyMember):
+async def add_family_member(member: FamilyMember, current_user: CurrentUser = Depends(require_current_user)):
+    if member.user_id != current_user.user_id and current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="403 Forbidden: Cannot modify another user's family members.")
     db = get_supabase()
     conditions_normalized = await normalize_conditions(member.conditions)
     
@@ -87,30 +99,28 @@ async def add_family_member(member: FamilyMember):
         "conditions_raw": member.conditions,
         "conditions_normalized": conditions_normalized
     }
-    if db.available:
-        result = await db.insert("family_members", data)
-        if result: return result[0] if isinstance(result, list) and len(result) > 0 else data
-    
-    _family_members.append(data)
-    return data
+    result = await db.insert("family_members", data)
+    return result if isinstance(result, dict) else (result[0] if isinstance(result, list) and len(result) > 0 else data)
 
 @router.get("/members/{user_id}")
-async def get_family_members(user_id: str):
+async def get_family_members(user_id: str, current_user: CurrentUser = Depends(require_current_user)):
+    if user_id != current_user.user_id and current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="403 Forbidden: Cannot query another user's family members.")
     db = get_supabase()
-    if db.available:
-        result = await db.query("family_members", filters={"user_id": user_id})
-        if result: return result
-    return [m for m in _family_members if m["user_id"] == user_id]
+    result = await db.query("family_members", filters={"user_id": user_id})
+    return result or []
 
 @router.post("/add")
-async def add_medicine(med: Medicine):
+async def add_medicine(med: Medicine, current_user: CurrentUser = Depends(require_current_user)):
+    if med.user_id != current_user.user_id and current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="403 Forbidden: Cannot add to another user's cabinet.")
     db = get_supabase()
     
     resolved = await resolve_all_drugs([med.medicine_name])
     rxcui = resolved[0].get("rxcui") if resolved else None
     
     duplicate_warning = None
-    if db.available and rxcui:
+    if rxcui:
         dupes = await db.query("medicine_cabinet", filters={"user_id": med.user_id, "rxcui": rxcui})
         if dupes:
             duplicate_warning = f"This cabinet already contains {dupes[0]['medicine_name']} with the same active ingredient."
@@ -126,26 +136,17 @@ async def add_medicine(med: Medicine):
         "daily_dose_units": med.daily_dose_units
     }
     
-    if db.available:
-        result = await db.insert("medicine_cabinet", data)
-        if result: 
-            ret = dict(result[0]) if isinstance(result, list) and len(result) > 0 else dict(data)
-            if duplicate_warning: ret["duplicate_warning"] = duplicate_warning
-            return ret
-            
-    _medicine_cabinet.append(data)
-    ret = dict(data)
+    result = await db.insert("medicine_cabinet", data)
+    ret = dict(result if isinstance(result, dict) else (result[0] if isinstance(result, list) and len(result) > 0 else data))
     if duplicate_warning: ret["duplicate_warning"] = duplicate_warning
     return ret
 
 @router.get("/list/{user_id}")
-async def list_medicines(user_id: str):
+async def list_medicines(user_id: str, current_user: CurrentUser = Depends(require_current_user)):
+    if user_id != current_user.user_id and current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="403 Forbidden: Cannot query another user's cabinet.")
     db = get_supabase()
-    if db.available:
-        result = await db.query("medicine_cabinet", filters={"user_id": user_id})
-        meds = result or []
-    else:
-        meds = [m for m in _medicine_cabinet if m["user_id"] == user_id]
+    meds = await db.query("medicine_cabinet", filters={"user_id": user_id}) or []
         
     rxcui_map = {}
     for row in meds:
@@ -161,8 +162,10 @@ async def list_medicines(user_id: str):
     return {"medicines": meds, "household_duplicates": household_duplicates}
 
 @router.get("/expiring/{user_id}")
-async def get_expiring(user_id: str):
-    list_res = await list_medicines(user_id)
+async def get_expiring(user_id: str, current_user: CurrentUser = Depends(require_current_user)):
+    if user_id != current_user.user_id and current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="403 Forbidden: Cannot query another user's cabinet.")
+    list_res = await list_medicines(user_id, current_user)
     meds = list_res.get("medicines", [])
     now = datetime.utcnow()
     threshold = now + timedelta(days=30)
@@ -188,16 +191,11 @@ async def get_expiring(user_id: str):
     return {"expiring": expiring}
 
 @router.get("/check/{medicine_name}/{member_id}")
-async def check_safe(medicine_name: str, member_id: str):
+async def check_safe(medicine_name: str, member_id: str, current_user: CurrentUser = Depends(require_current_user)):
     db = get_supabase()
     member = None
-    if db.available:
-        result = await db.query("family_members", filters={"id": member_id})
-        if result: member = result[0]
-        
-    if not member:
-        members = [m for m in _family_members if m["id"] == member_id]
-        if members: member = members[0]
+    result = await db.query("family_members", filters={"id": member_id})
+    if result: member = result[0]
         
     if not member:
         raise HTTPException(status_code=404, detail="Member not found")
@@ -259,7 +257,7 @@ async def check_safe(medicine_name: str, member_id: str):
                 warning = f"Contraindication found: {resolved_name} and {', '.join(set(findings))}"
     
     if not warning:
-        verdict_source = "hardcoded_fallback"
+        verdict_source = "live_medrt_cleared"
         
     if db.available:
         try:

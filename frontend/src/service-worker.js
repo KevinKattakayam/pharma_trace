@@ -3,6 +3,7 @@ import { precacheAndRoute } from 'workbox-precaching';
 import { registerRoute } from 'workbox-routing';
 import { StaleWhileRevalidate, NetworkFirst, CacheFirst } from 'workbox-strategies';
 import { ExpirationPlugin } from 'workbox-expiration';
+import { getDecryptedTokenFromIndexedDB } from './utils/cryptoStorage';
 
 self.skipWaiting();
 clientsClaim();
@@ -140,15 +141,15 @@ async function processCustomSyncQueue() {
      try {
         const headers = { 'Content-Type': 'application/json' };
         
-        // Fetch fresh auth token right before replay to avoid JWT expiration failures
-        const tokenReq = await new Promise(r => {
-           const tx = db.transaction(['meta'], 'readonly');
-           const req = tx.objectStore('meta').get('auth_token');
-           req.onsuccess = () => r(req.result?.value);
-           req.onerror = () => r(null);
-        });
+        // Fetch fresh AES-GCM decrypted auth token right before replay
+        const tokenReq = await getDecryptedTokenFromIndexedDB();
         if (tokenReq) {
            headers['Authorization'] = `Bearer ${tokenReq}`;
+        }
+
+        // OCC: Send entity version as If-Match header for conflict detection
+        if (item.entity_version) {
+           headers['If-Match'] = item.entity_version;
         }
         
         const response = await fetch(item.endpoint, {
@@ -164,6 +165,30 @@ async function processCustomSyncQueue() {
              tx.oncomplete = r;
            });
            bc.postMessage({ type: 'OUTBOX_UPDATE', payload: { status: 'SYNC_SUCCESS', id: item.id } });
+        } else if (response.status === 409) {
+           // OCC CONFLICT: Server state has diverged from the offline snapshot.
+           // Mark item as conflicted and notify UI for manual 3-way reconciliation.
+           let serverDelta = null;
+           try { serverDelta = await response.json(); } catch (_) {}
+           await new Promise(r => {
+             const tx = db.transaction(['sync_queue'], 'readwrite');
+             tx.objectStore('sync_queue').put({
+               ...item,
+               conflict_status: '409_conflict',
+               server_delta: serverDelta,
+               conflict_detected_at: Date.now()
+             });
+             tx.oncomplete = r;
+           });
+           bc.postMessage({
+             type: 'OUTBOX_UPDATE',
+             payload: {
+               status: 'SYNC_CONFLICT',
+               id: item.id,
+               server_delta: serverDelta,
+               message: 'Server data changed while offline. Manual review required.'
+             }
+           });
         } else {
            await new Promise(r => {
              const tx = db.transaction(['sync_queue'], 'readwrite');

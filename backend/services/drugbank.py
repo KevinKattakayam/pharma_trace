@@ -91,7 +91,14 @@ Only include real interactions mentioned in the text. Do not invent any."""
 
             if resp.status_code == 200:
                 data = resp.json()
-                content = data["choices"][0]["message"]["content"]
+                content = data["choices"][0]["message"]["content"].strip()
+                if content.startswith("```json"):
+                    content = content[7:]
+                if content.startswith("```"):
+                    content = content[3:]
+                if content.endswith("```"):
+                    content = content[:-3]
+                content = content.strip()
                 parsed = json.loads(content)
                 return parsed.get("interactions", [])
     except Exception:

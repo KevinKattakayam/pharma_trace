@@ -12,6 +12,16 @@ export default function Scanner({ onBarcodeScan, onImageCapture, onManualEntry, 
   const [persistenceFailed, setPersistenceFailed] = useState(false);
   const [isAwaitingExpiry, setIsAwaitingExpiry] = useState(false);
   const cameraRequested = useRef(false);
+  const ocrWorkerRef = useRef(null);
+
+  useEffect(() => {
+    return () => {
+      if (ocrWorkerRef.current) {
+        ocrWorkerRef.current.terminate();
+        ocrWorkerRef.current = null;
+      }
+    };
+  }, []);
 
   // Camera startup — only when user explicitly requests a camera mode
   const switchToCamera = useCallback((targetMode) => {
@@ -24,7 +34,6 @@ export default function Scanner({ onBarcodeScan, onImageCapture, onManualEntry, 
   useEffect(() => {
     if (error && cameraRequested.current) {
       cameraRequested.current = false;
-      // Don't auto-switch — let the error screen show with a manual entry button
     }
   }, [error]);
 
@@ -144,39 +153,120 @@ export default function Scanner({ onBarcodeScan, onImageCapture, onManualEntry, 
     };
   }, [mode, isScanning, onManualEntry, onCachedResult, stopCamera, videoRef, requireExpiry, isAwaitingExpiry]);
 
+  /**
+   * Compress a canvas/blob to WebP at ~40KB for efficient cloud vision streaming.
+   * Returns base64 string without the data URI prefix.
+   */
+  const compressToWebP = useCallback(async (source) => {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        // Scale down to max 800px on longest side for bandwidth efficiency
+        const MAX_DIM = 800;
+        let w = img.width, h = img.height;
+        if (w > MAX_DIM || h > MAX_DIM) {
+          const ratio = Math.min(MAX_DIM / w, MAX_DIM / h);
+          w = Math.round(w * ratio);
+          h = Math.round(h * ratio);
+        }
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, w, h);
+        // WebP at quality 0.6 typically yields ~30-50KB for medicine packaging
+        const webpDataUrl = canvas.toDataURL('image/webp', 0.6);
+        resolve(webpDataUrl.replace(/^data:image\/webp;base64,/, ''));
+      };
+      img.onerror = () => resolve(null);
+      if (typeof source === 'string') {
+        img.src = source;
+      } else if (source instanceof Blob) {
+        img.src = URL.createObjectURL(source);
+      }
+    });
+  }, []);
+
   const handleCapture = useCallback(async () => {
-    const frame = captureFrame();
-    if (frame && onImageCapture) { 
+    const captured = await captureFrame();
+    if (!captured) return;
+
+    // Hard file size cap of 5MB before upload
+    if (captured.blob && captured.blob.size > 5 * 1024 * 1024) {
+      alert("Image too large (> 5MB). Please move closer to the label or retake photo in lower resolution.");
+      return;
+    }
+
+    const ocrInput = captured.blob || captured.dataUrl;
+    if (ocrInput && onImageCapture) { 
       stopCamera(); 
       setIsProcessingAI(true);
       
       let extractedText = '';
-      try {
-        const processedFrame = await preprocessForOCR(frame);
-        const { data: { text, confidence } } = await Tesseract.recognize(processedFrame, 'eng');
-        if (confidence >= 70) {
-          extractedText = text.trim();
-          
-          const cached = await checkOfflineCache(extractedText);
-          if (cached && onCachedResult) {
-            setIsProcessingAI(false);
-            const formatted = await formatCachedResult(cached);
-            onCachedResult(formatted);
-            return;
+      const isOnline = navigator.onLine;
+
+      if (!isOnline) {
+        // OFFLINE PATH: Use Tesseract.js WASM OCR as fallback
+        // Only loads the 50-100MB WASM engine when truly disconnected
+        try {
+          if (!ocrWorkerRef.current) {
+            ocrWorkerRef.current = await Tesseract.createWorker('eng');
           }
+          const { data: { text, confidence } } = await ocrWorkerRef.current.recognize(ocrInput);
+          if (confidence >= 70) {
+            extractedText = text.trim();
+            
+            const cached = await checkOfflineCache(extractedText);
+            if (cached && onCachedResult) {
+              setIsProcessingAI(false);
+              const formatted = await formatCachedResult(cached);
+              onCachedResult(formatted);
+              return;
+            }
+          }
+        } catch (err) {
+          console.error("Tesseract offline OCR failed:", err);
+        } finally {
+          setIsProcessingAI(false);
         }
-      } catch (err) {
-        console.error("Tesseract extraction failed:", err);
-      } finally {
-        setIsProcessingAI(false);
+      } else {
+        // ONLINE PATH: Compress to WebP (~40KB) and stream to cloud vision
+        // Cloud models handle metallic foil glare, curved bottles, and Indian scripts
+        // with ~99% accuracy vs ~70% for on-device WASM Tesseract
+        setIsProcessingAI(true);
+      }
+
+      // Compress image to WebP for efficient network transfer
+      const sourceForB64 = captured.dataUrl || captured.blob;
+      let b64 = '';
+      if (isOnline && sourceForB64) {
+        // WebP compression: ~40KB vs ~2MB raw JPEG
+        b64 = await compressToWebP(sourceForB64) || '';
       }
       
+      // Fallback to raw base64 if WebP compression failed or offline
+      if (!b64) {
+        if (captured.dataUrl) {
+          b64 = captured.dataUrl.replace(/^data:image\/[a-z]+;base64,/, '');
+        } else if (captured.blob) {
+          const buf = await captured.blob.arrayBuffer();
+          let binary = '';
+          const bytes = new Uint8Array(buf);
+          for (let i = 0; i < bytes.byteLength; i++) {
+            binary += String.fromCharCode(bytes[i]);
+          }
+          b64 = window.btoa(binary);
+        }
+      }
+
+      setIsProcessingAI(false);
       onImageCapture({ 
-        image: frame.replace(/^data:image\/[a-z]+;base64,/, ''), 
-        extracted_text: extractedText || undefined 
+        image: b64, 
+        extracted_text: extractedText || undefined,
+        compression: isOnline ? 'webp' : 'raw'
       }); 
     }
-  }, [captureFrame, onImageCapture, stopCamera, onCachedResult]);
+  }, [captureFrame, onImageCapture, stopCamera, onCachedResult, compressToWebP]);
 
   const handleManualSubmit = useCallback(async (e) => {
     e.preventDefault();

@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import api from '../utils/api';
 
-const USER_ID = 'demo-user-123';
+const USER_ID = localStorage.getItem('user_id') || 'anonymous';
 
 const StatusBadge = ({ status }) => {
   const cfg = {

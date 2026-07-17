@@ -1,134 +1,117 @@
 """
 Caregiver router — linking caregivers to care recipients, real-time medication monitoring.
-All data from real user interactions. No dummy/sample data.
+All data from real user interactions stored in Postgres. Zero volatile in-memory fallbacks.
 """
 import uuid
 import secrets
-from fastapi import APIRouter, HTTPException
-from models.schemas import CaregiverLinkRequest
+from fastapi import APIRouter, HTTPException, Depends
+from models.schemas import CaregiverLinkRequest, CurrentUser
+from dependencies import require_current_user
 from services.supabase import get_supabase
 from services.drug_resolver import resolve_all_drugs
 from services.interactions import check_interactions_enterprise
 
 router = APIRouter(prefix="/caregiver", tags=["caregiver"])
 
-# In-memory storage — fallback if Supabase is down
-_links: list[dict] = []
-_recipients: dict[str, dict] = {}  # code -> recipient data
-_alerts: list[dict] = []
-
 
 @router.post("/link")
-async def generate_caregiver_link():
+async def generate_caregiver_link(current_user: CurrentUser = Depends(require_current_user)):
     """Generate a cryptographically secure invite code to link a caregiver."""
-    code = secrets.token_urlsafe(16)
     db = get_supabase()
-    data = {"code": code, "status": "pending", "caregiver_id": None}
-    
-    if db.available:
-        try:
-            res = await db.insert("caregiver_links", data)
-            if res: return {"code": code, "status": "pending"}
-        except Exception:
-            pass
+    if not db.available:
+        raise HTTPException(status_code=503, detail="503 Service Unavailable: Database storage layer disconnected.")
 
-    _links.append(data)
-    return {"code": code, "status": "pending"}
+    code = secrets.token_urlsafe(16)
+    data = {"code": code, "status": "pending", "caregiver_id": None, "creator_user_id": current_user.user_id}
+    
+    try:
+        res = await db.insert("caregiver_links", data)
+        if not res:
+            raise HTTPException(status_code=500, detail="Failed to persist invite code")
+        return {"code": code, "status": "pending"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database write failure: {str(e)}")
 
 
 @router.post("/accept")
-async def accept_caregiver_link(request: CaregiverLinkRequest):
-    """Accept a caregiver invite code."""
+async def accept_caregiver_link(request: CaregiverLinkRequest, current_user: CurrentUser = Depends(require_current_user)):
+    """Accept a caregiver invite code and establish care recipient monitoring relationship."""
     db = get_supabase()
-    caregiver_id = str(uuid.uuid4())
-    
-    if db.available:
-        try:
-            links = await db.query("caregiver_links", filters={"code": request.code})
-            if links:
-                link = links[0]
-                if link.get("status") == "active":
-                    return {"status": "already_active", "message": "This link is already active"}
-                
-                # We would normally update, but simplistic wrapper: just insert recipient
-                await db.insert("caregiver_recipients", {
-                    "id": str(uuid.uuid4()),
-                    "code": request.code,
-                    "caregiver_id": caregiver_id,
-                    "name": "Recipient-" + request.code[:4]
-                })
-                return {"status": "active", "message": "Caregiver link established", "caregiver_id": caregiver_id}
-        except Exception:
-            pass
+    if not db.available:
+        raise HTTPException(status_code=503, detail="503 Service Unavailable: Database storage layer disconnected.")
 
-    for link in _links:
-        if link["code"] == request.code:
-            if link["status"] == "active":
-                return {"status": "already_active", "message": "This link is already active"}
-            link["status"] = "active"
-            link["caregiver_id"] = caregiver_id
-            _recipients[request.code] = {
-                "name": "Recipient-" + request.code[:4],
-                "medications": [],
-                "alerts": []
-            }
-            return {"status": "active", "message": "Caregiver link established", "caregiver_id": caregiver_id}
+    caregiver_id = current_user.user_id
+    
+    try:
+        links = await db.query("caregiver_links", filters={"code": request.code})
+        if not links:
+            raise HTTPException(status_code=404, detail="404 Not Found: Invalid or expired invite code.")
             
-    raise HTTPException(status_code=404, detail="Invalid invite code")
+        link = links[0]
+        if link.get("creator_user_id") == current_user.user_id:
+            raise HTTPException(status_code=400, detail="400 Bad Request: Cannot link yourself as your own caregiver.")
+        if link.get("status") == "active":
+            return {"status": "already_active", "message": "This link is already active"}
+        
+        # Update link status
+        await db.update("caregiver_links", {"status": "active", "caregiver_id": caregiver_id}, filters={"code": request.code})
+        
+        # Create recipient tracking entry
+        await db.insert("caregiver_recipients", {
+            "id": str(uuid.uuid4()),
+            "code": request.code,
+            "caregiver_id": caregiver_id,
+            "name": "Recipient-" + request.code[:4]
+        })
+        return {"status": "active", "message": "Caregiver link established", "caregiver_id": caregiver_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database query failure: {str(e)}")
 
 
 @router.get("/dashboard")
-async def get_caregiver_dashboard():
-    """Get caregiver dashboard with all care recipients and their real medications."""
+async def get_caregiver_dashboard(current_user: CurrentUser = Depends(require_current_user)):
+    """Get caregiver dashboard strictly scoped to current user's linked recipients."""
     db = get_supabase()
+    if not db.available:
+        raise HTTPException(status_code=503, detail="503 Service Unavailable: Database storage layer disconnected.")
+
     recipients_out = []
-    total_linked = 0
-    pending_invites = 0
-
-    if db.available:
-        try:
-            recs = await db.query("caregiver_recipients", limit=100)
-            pending = await db.query("caregiver_links", filters={"status": "pending"}, limit=100)
-            pending_invites = len(pending) if pending else 0
-            
-            for r in (recs or []):
-                meds = await db.query("caregiver_medications", filters={"recipient_code": r["code"]}, limit=50)
-                alerts = await db.query("caregiver_alerts", filters={"recipient_code": r["code"]}, limit=20)
-                recipients_out.append({
-                    "code": r["code"],
-                    "name": r.get("name", r["code"]),
-                    "medications": meds or [],
-                    "alerts": alerts or []
-                })
-            total_linked = len(recipients_out)
-            return {"recipients": recipients_out, "total_linked": total_linked, "pending_invites": pending_invites}
-        except Exception:
-            pass
-
-    # Fallback
-    active_links = [l for l in _links if l["status"] == "active"]
-    for link in active_links:
-        recipient = _recipients.get(link["code"], {})
-        recipients_out.append({
-            "code": link["code"],
-            "name": recipient.get("name", link["code"]),
-            "medications": recipient.get("medications", []),
-            "alerts": recipient.get("alerts", [])
-        })
-
-    return {
-        "recipients": recipients_out,
-        "total_linked": len(active_links),
-        "pending_invites": sum(1 for l in _links if l["status"] == "pending")
-    }
+    
+    try:
+        recs = await db.query("caregiver_recipients", filters={"caregiver_id": current_user.user_id}, limit=100)
+        pending = await db.query("caregiver_links", filters={"creator_user_id": current_user.user_id, "status": "pending"}, limit=100)
+        pending_invites = len(pending) if pending else 0
+        
+        for r in (recs or []):
+            meds = await db.query("caregiver_medications", filters={"recipient_code": r["code"]}, limit=50)
+            alerts = await db.query("caregiver_alerts", filters={"recipient_code": r["code"]}, limit=20)
+            recipients_out.append({
+                "code": r["code"],
+                "name": r.get("name", r["code"]),
+                "medications": meds or [],
+                "alerts": alerts or []
+            })
+        return {"recipients": recipients_out, "total_linked": len(recipients_out), "pending_invites": pending_invites}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve dashboard state: {str(e)}")
 
 
 @router.post("/recipient/{code}/medication")
-async def add_recipient_medication(code: str, drug_name: str, ndc: str = "", confidence: float = 0):
-    """Add a verified medication and run real interaction alerts."""
+async def add_recipient_medication(code: str, drug_name: str, ndc: str = "", confidence: float = 0, current_user: CurrentUser = Depends(require_current_user)):
+    """Add a verified medication to recipient profile and run real enterprise interaction scans."""
     db = get_supabase()
-    
-    # Resolve the new drug
+    if not db.available:
+        raise HTTPException(status_code=503, detail="503 Service Unavailable: Database storage layer disconnected.")
+
+    # Verify authorization (ensure caregiver is linked to this recipient)
+    recs = await db.query("caregiver_recipients", filters={"code": code, "caregiver_id": current_user.user_id})
+    if not recs:
+        raise HTTPException(status_code=403, detail="403 Forbidden: Not authorized to manage this care recipient.")
+
     resolved = await resolve_all_drugs([drug_name])
     new_rxcui = resolved[0].get("rxcui") if resolved else None
     resolved_name = resolved[0].get("generic_name", drug_name) if resolved else drug_name
@@ -145,28 +128,21 @@ async def add_recipient_medication(code: str, drug_name: str, ndc: str = "", con
     
     existing_rxcuis = []
     
-    if db.available:
-        try:
-            await db.insert("caregiver_medications", med)
-            existing_meds = await db.query("caregiver_medications", filters={"recipient_code": code}, limit=100)
-            if existing_meds:
-                existing_rxcuis = [m.get("rxcui") for m in existing_meds if m.get("rxcui")]
-        except Exception:
-            pass
-    else:
-        if code not in _recipients:
-            raise HTTPException(status_code=404, detail="Recipient not found")
-        _recipients[code]["medications"].append(med)
-        existing_rxcuis = [m.get("rxcui") for m in _recipients[code]["medications"] if m.get("rxcui")]
+    try:
+        await db.insert("caregiver_medications", med)
+        existing_meds = await db.query("caregiver_medications", filters={"recipient_code": code}, limit=100)
+        if existing_meds:
+            existing_rxcuis = [m.get("rxcui") for m in existing_meds if m.get("rxcui")]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to persist recipient medication: {str(e)}")
 
-    # Real severity interactions check!
+    # Real enterprise severity interactions check
     new_alerts = []
     if new_rxcui and existing_rxcuis:
         rxcuis_to_check = list(set([new_rxcui] + existing_rxcuis))
         if len(rxcuis_to_check) > 1:
             ixns = await check_interactions_enterprise(rxcuis_to_check)
             for ixn in ixns:
-                # If interaction involves the newly added drug and is major/contraindicated
                 if ixn.severity in ["major", "contraindicated"] and new_rxcui in [getattr(ixn, "drug_a_rxcui", ""), getattr(ixn, "drug_b_rxcui", ""), new_rxcui]:
                     alert = {
                         "id": str(uuid.uuid4()),
@@ -186,30 +162,32 @@ async def add_recipient_medication(code: str, drug_name: str, ndc: str = "", con
             "severity": "high" if confidence < 40 else "moderate"
         })
 
-    # Save alerts
     for alert in new_alerts:
-        if db.available:
-            try:
-                await db.insert("caregiver_alerts", alert)
-            except Exception:
-                pass
-        else:
-            if code in _recipients:
-                _recipients[code]["alerts"].append(alert)
-            _alerts.append(alert)
+        try:
+            await db.insert("caregiver_alerts", alert)
+        except Exception:
+            pass
 
     return {"status": "added", "medication": med, "new_alerts": new_alerts}
 
 
 @router.get("/alerts")
-async def get_caregiver_alerts():
-    """Get all unread alerts for caregiver."""
+async def get_caregiver_alerts(current_user: CurrentUser = Depends(require_current_user)):
+    """Get all unread clinical monitoring alerts strictly scoped to current caregiver."""
     db = get_supabase()
-    if db.available:
-        try:
-            # Simplistic wrapper fetch
-            alerts = await db.query("caregiver_alerts", limit=50)
-            return {"alerts": alerts or [], "total": len(alerts or [])}
-        except Exception:
-            pass
-    return {"alerts": _alerts, "total": len(_alerts)}
+    if not db.available:
+        raise HTTPException(status_code=503, detail="503 Service Unavailable: Database storage layer disconnected.")
+
+    try:
+        # Get all recipient codes linked to this caregiver
+        recs = await db.query("caregiver_recipients", filters={"caregiver_id": current_user.user_id}, limit=100)
+        rec_codes = [r["code"] for r in (recs or [])]
+        
+        all_alerts = []
+        for code in rec_codes:
+            alerts = await db.query("caregiver_alerts", filters={"recipient_code": code}, limit=50)
+            all_alerts.extend(alerts or [])
+            
+        return {"alerts": all_alerts, "total": len(all_alerts)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve alerts: {str(e)}")

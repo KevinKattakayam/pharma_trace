@@ -4,6 +4,9 @@ from services.drug_resolver import resolve_all_drugs
 from services.interactions import check_interactions_enterprise
 from services.prescription import generate_summaries
 from services.translation import translate_medical_text
+from starlette.requests import Request
+from services.limiter import limiter
+from services.sanitize import sanitize_drug_input
 
 router = APIRouter(prefix="/prescription", tags=["prescription"])
 
@@ -60,9 +63,12 @@ async def extract_image(req: ImageExtractRequest):
     return {"medicines": formatted}
 
 @router.post("/summarize", response_model=PrescriptionResponse)
-async def summarize_prescription(req: PrescriptionRequest):
+@limiter.limit("30/minute")
+async def summarize_prescription(request: Request, body: PrescriptionRequest):
+    req = body
+    sanitized_meds = [sanitize_drug_input(m, "prescription_summarize") for m in req.medicines]
     # Step 1: Resolve drug names
-    resolved = await resolve_all_drugs(req.medicines)
+    resolved = await resolve_all_drugs(sanitized_meds)
     unresolved = [r["raw_name"] for r in resolved if r["source"] == "unresolved"]
 
     # Step 2: Get RxCUIs for verified drugs

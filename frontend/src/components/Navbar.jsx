@@ -9,6 +9,7 @@ const Icons = {
   batch: <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/><line x1="9" y1="3" x2="9" y2="21"/></svg>,
   more: <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="1"/><circle cx="12" cy="5" r="1"/><circle cx="12" cy="19" r="1"/></svg>,
   interact: <svg viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/></svg>,
+  safety: <svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M12 8v5"/><circle cx="12" cy="16.5" r=".7"/></svg>,
   dashboard: <svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>,
   report: <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>,
   close: <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>,
@@ -35,6 +36,7 @@ const toolsMenu = [
   { path: '/dosage', icon: 'dosage', label: 'Dosage Personalizer' },
   { path: '/generics', icon: 'generic', label: 'Generic Finder' },
   { path: '/report', icon: 'report', label: 'Report Medicine' },
+  { path: '/safety-cases', icon: 'safety', label: 'Safety Cases', enterprise: true },
   { path: '/dashboard', icon: 'dashboard', label: 'Caregiver Mode' },
   { path: '/clinic', icon: 'dashboard', label: 'Clinic Admin', enterprise: true },
   { path: '/adverse-event', icon: 'report', label: 'Adverse Event', enterprise: true },
@@ -57,14 +59,17 @@ export default function Navbar() {
       </nav>
 
       {/* Slide-up Tools Menu */}
-      <div className={`result-sheet ${menuOpen ? 'open' : ''}`} style={{zIndex: 105, height: '70vh', overflowY: 'auto'}}>
-        <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem'}}>
-          <h2 className="section-header" style={{margin: 0}}>More Tools</h2>
-          <button onClick={() => setMenuOpen(false)} style={{background: 'var(--bg-secondary)', borderRadius: '50%', padding: '0.5rem', display: 'flex'}}>
-            <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      <div className={`result-sheet ${menuOpen ? 'open' : ''}`} style={{zIndex: 105, maxHeight: '75vh', overflowY: 'auto'}}>
+        <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', paddingBottom: '0.75rem', borderBottom: '1px solid var(--border-light)'}}>
+          <div>
+            <h2 className="section-header" style={{margin: 0, fontSize: '20px', fontWeight: 800}}>Clinical Intelligence Suite</h2>
+            <span style={{fontSize: '11px', color: 'var(--primary)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em'}}>Safety workspace</span>
+          </div>
+          <button onClick={() => setMenuOpen(false)} style={{background: 'var(--bg-secondary)', borderRadius: '50%', width: '38px', height: '38px', display: 'flex', alignItems: 'center', justify: 'center', transition: 'all 0.2s var(--spring)'}}>
+            <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" strokeWidth="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
           </button>
         </div>
-        <div>
+        <div style={{display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: '0.6rem'}}>
           {toolsMenu.map(item => (
             <div
               key={item.path}
@@ -72,17 +77,18 @@ export default function Navbar() {
                  setMenuOpen(false);
                  navigate(item.path);
               }}
+              className="evidence-row"
               style={{
-                display: 'flex', alignItems: 'center', gap: '0.75rem',
-                padding: '1rem', borderRadius: '12px',
-                color: 'var(--text-main)', fontSize: '15px', fontWeight: 500,
-                marginBottom: '0.5rem', background: 'var(--bg-secondary)',
-                cursor: 'pointer'
+                display: 'flex', alignItems: 'center', gap: '0.85rem',
+                padding: '1rem 1.15rem', borderRadius: '16px',
+                color: 'var(--text-main)', fontSize: '15px', fontWeight: 700,
+                background: 'var(--bg-secondary)', border: '1px solid var(--border-light)',
+                cursor: 'pointer', transition: 'all 0.25s var(--spring)'
               }}
             >
-              <span style={{ color: 'var(--primary)', width: 24, height: 24, display: 'flex' }}>{Icons[item.icon]}</span>
-              {item.label}
-              {item.enterprise && <span className="verdict-badge verdict-badge--genuine" style={{ marginLeft: 'auto', fontSize: '10px' }}>B2B</span>}
+              <span style={{ color: 'var(--primary)', width: 28, height: 28, display: 'flex', alignItems: 'center', justify: 'center', background: 'var(--safe-bg)', borderRadius: '10px' }}>{Icons[item.icon]}</span>
+              <span style={{flex: 1}}>{item.label}</span>
+              {item.enterprise && <span className="verdict-badge verdict-badge--genuine" style={{ fontSize: '10px', padding: '0.2rem 0.6rem' }}>PRO</span>}
             </div>
           ))}
         </div>

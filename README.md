@@ -307,12 +307,20 @@ OPENROUTER_API_KEY=
 GROQ_API_KEY=
 
 # Supabase (PostgreSQL + PostGIS -- persistent storage)
+# IMPORTANT: Use separate Supabase projects per environment (pharmatrace-dev, pharmatrace-staging, pharmatrace-prod).
+# Never point local development environments at production databases.
 SUPABASE_URL=
 SUPABASE_KEY=
 
-# Security
-JWT_SECRET=change-this-in-production
-DEBUG=true
+# Langfuse Observability (LangGraph agent execution trace logging)
+LANGFUSE_PUBLIC_KEY=
+LANGFUSE_SECRET_KEY=
+LANGFUSE_HOST=https://cloud.langfuse.com
+
+# App & Security Environment Separation
+ENVIRONMENT=dev     # dev | staging | prod
+DEBUG=true          # Must be false in prod
+JWT_SECRET=change-this-to-a-cryptographically-secure-64-char-string-in-prod
 ```
 
 All keys are optional. The platform degrades gracefully:

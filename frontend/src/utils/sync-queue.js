@@ -1,5 +1,11 @@
 const DB_VERSION = 2;
 
+/**
+ * Generate a monotonically increasing version token for Optimistic Concurrency Control.
+ * The server will compare this against its current entity version on replay.
+ */
+const generateEntityVersion = () => `${Date.now()}-${Math.random().toString(36).substr(2, 6)}`;
+
 export const addToSyncQueue = (endpoint, payload) => {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open('PharmaTraceCache', DB_VERSION);
@@ -12,7 +18,9 @@ export const addToSyncQueue = (endpoint, payload) => {
           endpoint,
           payload,
           retry_count: 0,
-          created_at: Date.now()
+          created_at: Date.now(),
+          entity_version: generateEntityVersion(),
+          conflict_status: null   // null = pending, 'resolved' | '409_conflict'
        });
        tx.oncomplete = () => resolve();
        tx.onerror = () => reject(tx.error);

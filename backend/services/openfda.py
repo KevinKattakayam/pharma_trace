@@ -15,7 +15,9 @@ _ndc_cache: dict[str, dict] = {}
 _label_cache: dict[str, dict] = {}
 _shortage_cache: dict[str, dict] = {}  # { key: { data, timestamp } }
 from services.canonicalize import normalize_ndc
+from services.circuit_breaker import circuit_breaker
 
+@circuit_breaker(name="openfda", failure_threshold=3, recovery_timeout=30.0)
 async def lookup_by_ndc(ndc: str, api_key: str = "") -> Optional[dict]:
     """Look up a drug by NDC code via OpenFDA NDC endpoint."""
     ndc_canonical = normalize_ndc(ndc)
@@ -61,9 +63,11 @@ async def lookup_by_ndc(ndc: str, api_key: str = "") -> Optional[dict]:
             except Exception:
                 continue
 
-    return None
+    # Fallback: If not found by NDC number, try searching FDA drug labels by name
+    return await lookup_by_name(ndc, api_key=api_key)
 
 
+@circuit_breaker(name="openfda", failure_threshold=3, recovery_timeout=30.0)
 async def lookup_by_name(drug_name: str, api_key: str = "") -> Optional[dict]:
     """Look up a drug by brand or generic name via OpenFDA labels."""
     cache_key = drug_name.lower().strip()
@@ -119,10 +123,12 @@ async def check_recalls(ndc: str = None, drug_name: str = None, api_key: str = "
     """Check OpenFDA enforcement endpoint for active recalls."""
     async with httpx.AsyncClient(timeout=15.0) as client:
         try:
-            if ndc:
+            if ndc and any(c.isalpha() for c in ndc):
+                search = f'product_description:"{ndc}" OR openfda.brand_name:"{ndc}" OR openfda.generic_name:"{ndc}"'
+            elif ndc:
                 search = f'openfda.product_ndc:"{ndc}"'
             elif drug_name:
-                search = f'product_description:"{drug_name}"'
+                search = f'product_description:"{drug_name}" OR openfda.brand_name:"{drug_name}" OR openfda.generic_name:"{drug_name}"'
             else:
                 return []
 
@@ -134,9 +140,11 @@ async def check_recalls(ndc: str = None, drug_name: str = None, api_key: str = "
             if resp.status_code == 200:
                 data = resp.json()
                 return data.get("results", [])
-        except Exception:
-            pass
-    return []
+            else:
+                return [{"error": "SERVICE_UNAVAILABLE", "status": resp.status_code}]
+        except Exception as e:
+            return [{"error": "SERVICE_UNAVAILABLE", "detail": str(e)}]
+    return [{"error": "SERVICE_UNAVAILABLE"}]
 
 
 async def get_adverse_events(drug_name: str, limit: int = 10, api_key: str = "") -> list[dict]:

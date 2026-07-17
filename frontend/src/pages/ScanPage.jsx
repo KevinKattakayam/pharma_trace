@@ -46,7 +46,8 @@ export default function ScanPage() {
     if (!res) return res;
     try {
       const drugName = res.brand_name || res.generic_name || 'this medicine';
-      const members = await api.getFamilyMembers('demo-user-123');
+      const userId = localStorage.getItem('user_id') || 'anonymous';
+      const members = await api.getFamilyMembers(userId);
       const safetyChecks = await Promise.all(members.map(m => api.checkMedicineSafety(drugName, m.id)));
       const warnings = safetyChecks.filter(c => !c.is_safe).map(c => c.warning);
       return { ...res, family_warnings: warnings };

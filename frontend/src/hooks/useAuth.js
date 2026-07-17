@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { storeEncryptedTokenInIndexedDB } from '../utils/cryptoStorage';
 
 export function useAuth() {
   const [user, setUser] = useState(null);
@@ -19,6 +20,7 @@ export function useAuth() {
     localStorage.setItem('pharmatrace_user', JSON.stringify(userData));
     if (userData.token) {
       localStorage.setItem('pharmatrace_token', userData.token);
+      storeEncryptedTokenInIndexedDB(userData.token);
     }
   }, []);
 

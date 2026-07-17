@@ -1,4 +1,7 @@
-const API_BASE = '/api/v1';
+import { storeEncryptedTokenInIndexedDB } from './cryptoStorage';
+const configuredBase = import.meta.env.VITE_API_BASE_URL || '/api/v1';
+const API_BASE = configuredBase.replace(/\/$/, '');
+const DEFAULT_TIMEOUT_MS = 20_000;
 
 class ApiClient {
   constructor() {
@@ -7,23 +10,40 @@ class ApiClient {
   }
 
   async request(endpoint, options = {}) {
-    const headers = {
-      'Content-Type': 'application/json',
-      ...options.headers
-    };
-
-    if (this.token) {
-      headers['Authorization'] = `Bearer ${this.token}`;
+    const token = localStorage.getItem('pharmatrace_token');
+    const headers = { ...options.headers };
+    if (!(options.body instanceof FormData) && !headers['Content-Type']) {
+      headers['Content-Type'] = 'application/json';
     }
 
-    const response = await fetch(`${this.base}${endpoint}`, {
-      ...options,
-      headers
-    });
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), options.timeoutMs || DEFAULT_TIMEOUT_MS);
+    const abortFromCaller = () => controller.abort();
+    options.signal?.addEventListener('abort', abortFromCaller, { once: true });
+
+    let response;
+    try {
+      response = await fetch(`${this.base}${endpoint}`, { ...options, headers, signal: controller.signal });
+    } catch (error) {
+      if (error.name === 'AbortError') throw new Error('The request took too long. Check your connection and try again.');
+      throw new Error('Unable to reach PharmaTrace. Check your connection and try again.');
+    } finally {
+      window.clearTimeout(timeout);
+      options.signal?.removeEventListener('abort', abortFromCaller);
+    }
 
     if (!response.ok) {
+      const reqId = response.headers.get("X-Request-ID") || "unknown";
       const error = await response.json().catch(() => ({ detail: 'Network error' }));
-      throw new Error(error.detail || `HTTP ${response.status}`);
+      console.error(`[API Failure] Endpoint: ${endpoint} | Status: ${response.status} | Request-ID: ${reqId}`, error);
+      const errObj = new Error(`${error.detail || `HTTP ${response.status}`} (Req ID: ${reqId})`);
+      errObj.requestId = reqId;
+      errObj.status = response.status;
+      throw errObj;
     }
 
     return response.json();
@@ -153,6 +173,19 @@ class ApiClient {
       method: 'POST',
       body: JSON.stringify(reportData)
     });
+  }
+
+  // Safety-case workflow (quarantine and pharmacist/clinic escalation)
+  async createSafetyCase(data) {
+    return this.request('/safety-cases', { method: 'POST', body: JSON.stringify(data) });
+  }
+
+  async getSafetyCases() {
+    return this.request('/safety-cases');
+  }
+
+  async updateSafetyCase(id, data) {
+    return this.request(`/safety-cases/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(data) });
   }
 
   async getHeatmapData(bounds = null) {
@@ -358,6 +391,7 @@ class ApiClient {
   setToken(token) {
     this.token = token;
     localStorage.setItem('pharmatrace_token', token);
+    storeEncryptedTokenInIndexedDB(token);
   }
 
   async loginClinic(clinicId) {
@@ -412,4 +446,3 @@ class ApiClient {
 
 export const api = new ApiClient();
 export default api;
-

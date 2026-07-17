@@ -1,5 +1,5 @@
 import React, { Suspense, lazy, useEffect } from 'react';
-import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { BrowserRouter, Navigate, Routes, Route } from 'react-router-dom';
 import Navbar from './components/Navbar';
 import VoiceInterface from './components/VoiceInterface';
 import LowBandwidth from './components/LowBandwidth';
@@ -20,6 +20,7 @@ const CabinetPage = lazy(() => import('./pages/CabinetPage'));
 const PrescriptionSummary = lazy(() => import('./pages/PrescriptionSummary'));
 const ClinicDashboard = lazy(() => import('./pages/ClinicDashboard'));
 const AdverseEventReport = lazy(() => import('./pages/AdverseEventReport'));
+const SafetyCases = lazy(() => import('./pages/SafetyCases'));
 
 function LoadingFallback() {
   return (
@@ -32,6 +33,56 @@ function LoadingFallback() {
   );
 }
 
+class AppErrorBoundary extends React.Component {
+  state = { hasError: false };
+
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <main className="page app-error" role="alert">
+          <div className="container">
+            <div className="card">
+              <p className="label-text">Application error</p>
+              <h1>We couldn’t load this workspace.</h1>
+              <p className="legal-text">Your saved information has not been changed. Refresh to try again.</p>
+              <button className="btn btn--primary" onClick={() => window.location.reload()}>Refresh application</button>
+            </div>
+          </div>
+        </main>
+      );
+    }
+
+    return this.props.children;
+  }
+}
+
+const ProtectedRoute = ({ children }) => {
+  const token = localStorage.getItem('pharmatrace_token');
+  let isExpired = true;
+  if (token) {
+    try {
+      const base64Url = token.split('.')[1];
+      const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+      const payload = JSON.parse(window.atob(base64));
+      if (payload && payload.exp && payload.exp * 1000 > Date.now()) {
+        isExpired = false;
+      }
+    } catch (e) {
+      isExpired = true;
+    }
+  }
+
+  if (!token || isExpired) {
+    localStorage.removeItem('pharmatrace_token');
+    return <Navigate to="/" replace state={{ sessionExpired: true }} />;
+  }
+  return children;
+};
+
 export default function App() {
   useEffect(() => {
     initOfflineCache();
@@ -39,29 +90,32 @@ export default function App() {
 
   return (
     <BrowserRouter>
-      <LowBandwidth>
-        <Navbar />
-        <Suspense fallback={<LoadingFallback />}>
-          <Routes>
-            <Route path="/" element={<Home />} />
-            <Route path="/scan" element={<ScanPage />} />
-            <Route path="/interactions" element={<InteractionChecker />} />
-            <Route path="/map" element={<MapView />} />
-            <Route path="/dashboard" element={<CaregiverDashboard />} />
-            <Route path="/batch" element={<BatchVerification />} />
-            <Route path="/report" element={<ReportForm />} />
-            <Route path="/api-docs" element={<ApiDocs />} />
-            <Route path="/generics" element={<GenericFinder />} />
-            <Route path="/dosage" element={<DosagePage />} />
-            <Route path="/side-effects" element={<SideEffectsPage />} />
-            <Route path="/cabinet" element={<CabinetPage />} />
-            <Route path="/prescription" element={<PrescriptionSummary />} />
-            <Route path="/clinic" element={<ClinicDashboard />} />
-            <Route path="/adverse-event" element={<AdverseEventReport />} />
-          </Routes>
-        </Suspense>
-        <VoiceInterface />
-      </LowBandwidth>
+      <AppErrorBoundary>
+        <LowBandwidth>
+          <Navbar />
+          <Suspense fallback={<LoadingFallback />}>
+            <Routes>
+              <Route path="/" element={<Home />} />
+              <Route path="/scan" element={<ScanPage />} />
+              <Route path="/interactions" element={<InteractionChecker />} />
+              <Route path="/map" element={<MapView />} />
+              <Route path="/dashboard" element={<ProtectedRoute><CaregiverDashboard /></ProtectedRoute>} />
+              <Route path="/batch" element={<BatchVerification />} />
+              <Route path="/report" element={<ReportForm />} />
+              <Route path="/api-docs" element={<ApiDocs />} />
+              <Route path="/generics" element={<GenericFinder />} />
+              <Route path="/dosage" element={<DosagePage />} />
+              <Route path="/side-effects" element={<SideEffectsPage />} />
+              <Route path="/cabinet" element={<ProtectedRoute><CabinetPage /></ProtectedRoute>} />
+              <Route path="/prescription" element={<PrescriptionSummary />} />
+              <Route path="/clinic" element={<ProtectedRoute><ClinicDashboard /></ProtectedRoute>} />
+              <Route path="/adverse-event" element={<AdverseEventReport />} />
+              <Route path="/safety-cases" element={<ProtectedRoute><SafetyCases /></ProtectedRoute>} />
+            </Routes>
+          </Suspense>
+          <VoiceInterface />
+        </LowBandwidth>
+      </AppErrorBoundary>
     </BrowserRouter>
   );
 }
