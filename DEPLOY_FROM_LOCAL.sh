@@ -48,9 +48,9 @@ echo ""
 echo "📝 Step 1: Applying Supabase migrations (3 phases)..."
 echo ""
 
-SUPABASE_HOST="lfzxaxefdasqribypllf.supabase.co"
+SUPABASE_HOST=""
 SUPABASE_USER="postgres"
-SUPABASE_PASSWORD="B9dD@Ndp4sS7p+%"
+SUPABASE_PASSWORD=""
 SUPABASE_DB="postgres"
 
 export PGPASSWORD="$SUPABASE_PASSWORD"
@@ -79,17 +79,17 @@ railway login
 echo ""
 echo "📌 Step 3: Setting Railway environment variables..."
 
-RAILWAY_PROJECT_ID="lfzxaxefdasqribypllf"
+RAILWAY_PROJECT_ID=""
 railway env --project "$RAILWAY_PROJECT_ID"
 
 # Set variables
 railway variables set ENVIRONMENT=prod
 railway variables set DEBUG=false
-railway variables set JWT_SECRET="aVlbKys2aDO0Mi-w4o2QH7FjwI9nsPRdQQ1htjxTla3myc4Gdjp7F6WLxd8GdAtrH3aCfOQ7FdSyJkz_-N3Ts0nQBS5TisPxNIoIEzROoU9pxKFCb9giwvDLzhJwnfTS"
-railway variables set HMAC_DAILY_SECRET="nfakCcN3wMiv9WCPuW5Z-YAMoHzx7Fgk2EVl-lUP7mquxnCYkMN_n0ibnJbVaRHC"
+railway variables set JWT_SECRET=""
+railway variables set HMAC_DAILY_SECRET=""
 railway variables set CORS_ORIGINS="https://your-vercel-domain.vercel.app"
-railway variables set SUPABASE_URL="https://lfzxaxefdasqribypllf.supabase.co"
-railway variables set SUPABASE_KEY="sb_publishable_xqmz2ub2x9BM-XhAI8LEoQ_talRKGrq"
+railway variables set SUPABASE_URL=""
+railway variables set SUPABASE_KEY=""
 
 echo "✓ Variables configured"
 
