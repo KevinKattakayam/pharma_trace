@@ -10,13 +10,13 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 # Configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BACKEND_DIR="$SCRIPT_DIR/backend"
-SUPABASE_PASSWORD="B9dD@Ndp4sS7p+%"
+SUPABASE_PASSWORD=""
 SUPABASE_HOST="lfzxaxefdasqribypllf.supabase.co"
 SUPABASE_USER="postgres"
 SUPABASE_DB="postgres"
-RAILWAY_TOKEN="f1105107-965c-49d2-951f-3b52f8223239"
-JWT_SECRET="aVlbKys2aDO0Mi-w4o2QH7FjwI9nsPRdQQ1htjxTla3myc4Gdjp7F6WLxd8GdAtrH3aCfOQ7FdSyJkz_-N3Ts0nQBS5TisPxNIoIEzROoU9pxKFCb9giwvDLzhJwnfTS"
-HMAC_DAILY_SECRET="nfakCcN3wMiv9WCPuW5Z-YAMoHzx7Fgk2EVl-lUP7mquxnCYkMN_n0ibnJbVaRHC"
+RAILWAY_TOKEN=""
+JWT_SECRET=""
+HMAC_DAILY_SECRET=""
 
 # Export for Python subprocess
 export SUPABASE_PASSWORD
