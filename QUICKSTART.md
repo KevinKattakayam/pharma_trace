@@ -7,8 +7,8 @@ All systems ready for deployment. Follow these steps:
 ## Step 1: Apply Database Migrations
 
 Your Supabase project:
-- **URL:** https://lfzxaxefdasqribypllf.supabase.co
-- **Connection:** `postgresql://postgres:sb_publishable_xqmz2ub2x9BM-XhAI8LEoQ_talRKGrq@lfzxaxefdasqribypllf.supabase.co/postgres`
+- **URL:** 
+- **Connection:** ``
 
 **Option A: Using the script (recommended)**
 ```bash
@@ -25,11 +25,7 @@ PGPASSWORD="<your_supabase_password>" ./scripts/setup-prod.sh
    - File: `backend/migrations/phase4_safety_cases.sql`
 
 **Option C: Using psql (CLI)**
-```bash
-psql "postgresql://postgres:sb_publishable_xqmz2ub2x9BM-XhAI8LEoQ_talRKGrq@lfzxaxefdasqribypllf.supabase.co/postgres" -f backend/migrations/phase2_security.sql
-psql "postgresql://postgres:sb_publishable_xqmz2ub2x9BM-XhAI8LEoQ_talRKGrq@lfzxaxefdasqribypllf.supabase.co/postgres" -f backend/migrations/phase3_data_governance.sql
-psql "postgresql://postgres:sb_publishable_xqmz2ub2x9BM-XhAI8LEoQ_talRKGrq@lfzxaxefdasqribypllf.supabase.co/postgres" -f backend/migrations/phase4_safety_cases.sql
-```
+
 
 ---
 
@@ -41,11 +37,11 @@ psql "postgresql://postgres:sb_publishable_xqmz2ub2x9BM-XhAI8LEoQ_talRKGrq@lfzxa
 |-----|-------|
 | `ENVIRONMENT` | `prod` |
 | `DEBUG` | `false` |
-| `JWT_SECRET` | `aVlbKys2aDO0Mi-w4o2QH7FjwI9nsPRdQQ1htjxTla3myc4Gdjp7F6WLxd8GdAtrH3aCfOQ7FdSyJkz_-N3Ts0nQBS5TisPxNIoIEzROoU9pxKFCb9giwvDLzhJwnfTS` |
-| `HMAC_DAILY_SECRET` | `nfakCcN3wMiv9WCPuW5Z-YAMoHzx7Fgk2EVl-lUP7mquxnCYkMN_n0ibnJbVaRHC` |
+| `JWT_SECRET` | `` |
+| `HMAC_DAILY_SECRET` | `` |
 | `CORS_ORIGINS` | `https://your-vercel-domain.vercel.app` |
-| `SUPABASE_URL` | `https://lfzxaxefdasqribypllf.supabase.co` |
-| `SUPABASE_KEY` | `sb_publishable_xqmz2ub2x9BM-XhAI8LEoQ_talRKGrq` |
+| `SUPABASE_URL` | `` |
+| `SUPABASE_KEY` | `` |
 
 **Option A: Using Railway Dashboard (UI)**
 1. Go to railway.app → Login
@@ -60,11 +56,11 @@ railway login
 railway link
 railway variables set ENVIRONMENT=prod
 railway variables set DEBUG=false
-railway variables set JWT_SECRET="aVlbKys2aDO0Mi-w4o2QH7FjwI9nsPRdQQ1htjxTla3myc4Gdjp7F6WLxd8GdAtrH3aCfOQ7FdSyJkz_-N3Ts0nQBS5TisPxNIoIEzROoU9pxKFCb9giwvDLzhJwnfTS"
-railway variables set HMAC_DAILY_SECRET="nfakCcN3wMiv9WCPuW5Z-YAMoHzx7Fgk2EVl-lUP7mquxnCYkMN_n0ibnJbVaRHC"
+railway variables set JWT_SECRET=""
+railway variables set HMAC_DAILY_SECRET=""
 railway variables set CORS_ORIGINS="https://your-vercel-domain.vercel.app"
-railway variables set SUPABASE_URL="https://lfzxaxefdasqribypllf.supabase.co"
-railway variables set SUPABASE_KEY="sb_publishable_xqmz2ub2x9BM-XhAI8LEoQ_talRKGrq"
+railway variables set SUPABASE_URL=""
+railway variables set SUPABASE_KEY=""
 ```
 
 ---
