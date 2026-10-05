@@ -1,7 +1,9 @@
-import httpx
 import asyncio
 from dataclasses import dataclass
 from typing import Optional
+
+import httpx
+
 
 @dataclass
 class DrugInteraction:

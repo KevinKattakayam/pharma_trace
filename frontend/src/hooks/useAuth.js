@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { storeEncryptedTokenInIndexedDB } from '../utils/cryptoStorage';
+import { setToken, clearToken } from '../utils/session';
 
 export function useAuth() {
   const [user, setUser] = useState(null);
@@ -10,24 +10,24 @@ export function useAuth() {
     if (stored) {
       try {
         setUser(JSON.parse(stored));
-      } catch {}
+      } catch {
+        localStorage.removeItem('pharmatrace_user'); // corrupt profile: start signed out
+      }
     }
     setLoading(false);
   }, []);
 
   const login = useCallback((userData) => {
     setUser(userData);
-    localStorage.setItem('pharmatrace_user', JSON.stringify(userData));
-    if (userData.token) {
-      localStorage.setItem('pharmatrace_token', userData.token);
-      storeEncryptedTokenInIndexedDB(userData.token);
-    }
+    const { token, ...profile } = userData;
+    localStorage.setItem('pharmatrace_user', JSON.stringify(profile)); // profile only, never the token
+    if (token) setToken(token);
   }, []);
 
   const logout = useCallback(() => {
     setUser(null);
     localStorage.removeItem('pharmatrace_user');
-    localStorage.removeItem('pharmatrace_token');
+    clearToken();
   }, []);
 
   const updatePreferences = useCallback((prefs) => {

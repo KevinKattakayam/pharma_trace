@@ -6,6 +6,7 @@ Run before deployment:
 It intentionally never prints secret values.
 """
 import sys
+
 from config import get_settings
 
 

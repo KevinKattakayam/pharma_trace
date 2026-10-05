@@ -1,0 +1,8 @@
+[
+ {"formulation": "paracetamol", "dosage_form": "tablet", "strength": "500mg", "unit": "1 tablet",
+  "ceiling_price": 1.37, "notification": "SAMPLE S.O. 0000(E)", "effective_from": "2026-04-01",
+  "source_url": "https://example.invalid/sample", "dataset": "SAMPLE"},
+ {"formulation": "metformin", "dosage_form": "tablet", "strength": "500mg", "unit": "1 tablet",
+  "ceiling_price": 2.11, "notification": "SAMPLE S.O. 0000(E)", "effective_from": "2026-04-01",
+  "source_url": "https://example.invalid/sample", "dataset": "SAMPLE"}
+]

@@ -4,11 +4,11 @@ Primary: Live Supabase Postgres `indian_drug_registry` table (nightly-synced).
 Fallback: Local SQLite `cdsco_registry.db` (offline/cold-start only).
 https://cdsco.gov.in
 """
-import sqlite3
 import logging
+import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
-from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 

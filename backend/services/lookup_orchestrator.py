@@ -1,5 +1,4 @@
 import asyncio
-from typing import Any, Dict, List
 import logging
 
 logger = logging.getLogger(__name__)
@@ -24,11 +23,10 @@ async def parallel_lookup(ndc: str, location: dict = None) -> dict:
     Tier 2 — Parallel L1 lookups with circuit breakers.
     Calls OpenFDA, RxNav, CDSCO, DrugBank CE, and Weather API concurrently.
     """
-    from services.openfda import lookup_by_ndc, check_recalls
-    from services.interactions import check_interactions
+    from config import get_settings
     from services.cdsco import lookup_indian_drug
     from services.cold_chain import check_cold_chain
-    from config import get_settings
+    from services.openfda import check_recalls, lookup_by_ndc
     
     settings = get_settings()
     

@@ -3,11 +3,12 @@ Drug details router — side effects, dosage advice, generic alternatives, and A
 Integrates: OpenFDA labels, Groq AI (Llama 3.3), LibreTranslate.
 """
 from fastapi import APIRouter, HTTPException
-from models.schemas import DosageRequest, DosageAdvice, GenericAlternative
-from services.openfda import get_drug_label, lookup_by_ndc, find_generics, extract_openfda_info, check_drug_shortage
-from services.side_effects import extract_side_effects_from_label
-from services.dosage import evaluate_dosage
+
 from config import get_settings
+from models.schemas import DosageAdvice, DosageRequest
+from services.dosage import evaluate_dosage
+from services.openfda import check_drug_shortage, extract_openfda_info, find_generics, get_drug_label, lookup_by_ndc
+from services.side_effects import extract_side_effects_from_label
 
 router = APIRouter(prefix="/drugs", tags=["drugs"])
 
@@ -219,7 +220,7 @@ async def get_common_indian_medicines():
             # Fetch a larger pool and do adaptive window filtering in memory
             recent_verifs = await db.query("safety_check_log", limit=2000, order_by="created_at", order_desc=True)
             if recent_verifs:
-                from datetime import datetime, timezone, timedelta
+                from datetime import datetime, timedelta, timezone
                 now = datetime.now(timezone.utc)
                 
                 def extract_counts_for_window(days: int):

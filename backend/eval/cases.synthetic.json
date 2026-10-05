@@ -1,0 +1,7 @@
+{"synthetic": true, "provenance": "Hand-written smoke cases by the engineering team; not real packs.",
+ "cases": [
+  {"id": "cloned-qr", "endpoint": "pack_check", "input": {"qr_payload": "U|Paracetamol|Crocin|GSK|AB12|01/2025|12/2030|L", "printed": {"batch_no": "ZZ99"}}, "expected": {"status": "inconsistent", "reasons_include": ["label_inconsistent"]}},
+  {"id": "consistent", "endpoint": "pack_check", "input": {"qr_payload": "U|Paracetamol|Crocin|GSK|AB12|01/2025|12/2027|L", "printed": {"batch_no": "AB12"}}, "expected": {"status": "consistent", "reasons_exclude": ["label_inconsistent"]}},
+  {"id": "bad-check-digit", "endpoint": "verify_barcode", "input": {"barcode": "4006381333932"}, "expected": {"verdict": "suspicious", "reasons_include": ["invalid_check_digit"]}},
+  {"id": "clean-gtin", "endpoint": "verify_barcode", "input": {"barcode": "4006381333931"}, "expected": {"verdict": "unknown"}}
+ ]}

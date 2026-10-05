@@ -11,10 +11,10 @@ Orchestrates multiple AI agents in a graph workflow:
 
 Uses Groq (Llama 3.3 70B) for fast inference at each node.
 """
-from langgraph.graph import StateGraph, END
-from typing import TypedDict, Optional, Annotated
 import operator
+from typing import Annotated, Optional, TypedDict
 
+from langgraph.graph import END, StateGraph
 
 # ── Agent State ──
 
@@ -67,8 +67,8 @@ async def barcode_agent(state: DrugVerificationState) -> dict:
 async def fda_lookup_agent(state: DrugVerificationState) -> dict:
     """Agent 2: Query OpenFDA for drug information."""
     try:
-        from services.openfda import lookup_by_ndc, extract_openfda_info, get_drug_label
         from config import get_settings
+        from services.openfda import extract_openfda_info, lookup_by_ndc
         settings = get_settings()
 
         barcode = state.get("barcode", "")
@@ -89,8 +89,8 @@ async def fda_lookup_agent(state: DrugVerificationState) -> dict:
             }
         else:
             # Fallback to Indian CDSCO database & Multi-Tier Resolver
-            from services.cdsco import lookup_indian_drug
             from services.canonicalize import map_to_rxcui
+            from services.cdsco import lookup_indian_drug
             from services.drug_resolver import resolve_drug_name
             
             cdsco_info = await lookup_indian_drug(ndc_to_lookup)
@@ -139,8 +139,8 @@ async def fda_lookup_agent(state: DrugVerificationState) -> dict:
 async def recall_agent(state: DrugVerificationState) -> dict:
     """Agent 3: Check for active recalls."""
     try:
-        from services.openfda import check_recalls
         from config import get_settings
+        from services.openfda import check_recalls
         settings = get_settings()
 
         # Use barcode or first drug name directly to allow parallel execution
@@ -155,7 +155,7 @@ async def recall_agent(state: DrugVerificationState) -> dict:
         )
 
         status = "pass" if not recalls else "fail"
-        detail = f"No active recalls" if not recalls else f"{len(recalls)} ACTIVE RECALL(S) found — {recalls[0].get('reason_for_recall', 'Unknown reason')[:100]}"
+        detail = "No active recalls" if not recalls else f"{len(recalls)} ACTIVE RECALL(S) found — {recalls[0].get('reason_for_recall', 'Unknown reason')[:100]}"
 
         return {
             "recall_data": recalls,
@@ -237,6 +237,7 @@ No markdown, no preamble, just JSON.
 
         # Generate AI summary using Groq
         import json
+
         from services.groq_ai import _groq_chat
         evidence_text = "\n".join(f"- [{e.get('status')}] {e.get('detail', '')}" for e in evidence)
         ai_result = await _groq_chat([
@@ -256,7 +257,7 @@ No markdown, no preamble, just JSON.
                 if isinstance(ai_result, str):
                     ai_result = json.loads(ai_result)
                 report.update(ai_result)
-            except:
+            except Exception:  # noqa: BLE001 - narrowed from bare except (audit R12)
                 pass
 
         ai_summary = report.get("patient_summary", f"Verification complete: {verdict} ({confidence}% confidence)")
@@ -269,8 +270,9 @@ No markdown, no preamble, just JSON.
 # ── Fault Tolerance Wrappers (TimeoutPolicy + Error Handler) ──
 import asyncio
 import uuid
-from langgraph.types import RetryPolicy
+
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.types import RetryPolicy
 
 try:
     from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
@@ -283,7 +285,7 @@ async def _timeout_node_wrapper(node_fn, state: DrugVerificationState, timeout_s
     except asyncio.TimeoutError:
         err_msg = f"TimeoutPolicy [{name}]: Exceeded {timeout_sec}s wall-clock limit"
         raise TimeoutError(err_msg)
-    except Exception as e:
+    except Exception:
         raise
 
 async def fda_lookup_node(state: DrugVerificationState) -> dict:
@@ -377,9 +379,9 @@ async def run_full_verification(barcode: str, drug_names: list[str] = None,
     Run the complete 6-agent verification pipeline.
     Returns final report with verdict, confidence, evidence trail, and AI summary.
     """
-    from services.lookup_orchestrator import parallel_lookup
     from services.confidence import bayesian_confidence
     from services.gtin import validate_gtin
+    from services.lookup_orchestrator import parallel_lookup
     
     gtin_res = validate_gtin(barcode)
     ndc = gtin_res.get("ndc_extracted") or barcode
@@ -442,6 +444,7 @@ async def run_full_verification(barcode: str, drug_names: list[str] = None,
     config = {"configurable": {"thread_id": str(uuid.uuid4())}}
     try:
         from langfuse.callback import CallbackHandler as LangfuseCallbackHandler
+
         from config import get_settings
         st = get_settings()
         if st.langfuse_public_key and st.langfuse_secret_key:

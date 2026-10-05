@@ -1,10 +1,4 @@
-from repositories.entities import (
-    VerificationRepository,
-    AuditRepository,
-    ReportRepository,
-    CaregiverRepository,
-    PharmacyRepository
-)
+from repositories.entities import AuditRepository, CaregiverRepository, PharmacyRepository, ReportRepository, VerificationRepository
 
 __all__ = [
     "VerificationRepository",

@@ -21,6 +21,8 @@ const PrescriptionSummary = lazy(() => import('./pages/PrescriptionSummary'));
 const ClinicDashboard = lazy(() => import('./pages/ClinicDashboard'));
 const AdverseEventReport = lazy(() => import('./pages/AdverseEventReport'));
 const SafetyCases = lazy(() => import('./pages/SafetyCases'));
+const PackCheck = lazy(() => import('./pages/PackCheck'));
+const PriceCheck = lazy(() => import('./pages/PriceCheck'));
 
 function LoadingFallback() {
   return (
@@ -97,6 +99,8 @@ export default function App() {
             <Routes>
               <Route path="/" element={<Home />} />
               <Route path="/scan" element={<ScanPage />} />
+              <Route path="/pack-check" element={<PackCheck />} />
+              <Route path="/price-check" element={<PriceCheck />} />
               <Route path="/interactions" element={<InteractionChecker />} />
               <Route path="/map" element={<MapView />} />
               <Route path="/dashboard" element={<ProtectedRoute><CaregiverDashboard /></ProtectedRoute>} />

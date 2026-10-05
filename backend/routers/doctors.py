@@ -3,9 +3,11 @@ Doctor Directory router — find nearby verified medical professionals.
 In production: backed by Supabase PostGIS `nearby_doctors` function.
 In development: in-memory store populated by user submissions.
 """
-import uuid
 import math
+import uuid
+
 from fastapi import APIRouter, HTTPException
+
 from services.supabase import get_supabase
 
 router = APIRouter(prefix="/doctors", tags=["doctors"])

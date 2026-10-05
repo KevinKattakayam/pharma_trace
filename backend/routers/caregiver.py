@@ -2,14 +2,16 @@
 Caregiver router — linking caregivers to care recipients, real-time medication monitoring.
 All data from real user interactions stored in Postgres. Zero volatile in-memory fallbacks.
 """
-import uuid
 import secrets
-from fastapi import APIRouter, HTTPException, Depends
-from models.schemas import CaregiverLinkRequest, CurrentUser
+import uuid
+
+from fastapi import APIRouter, Depends, HTTPException
+
 from dependencies import require_current_user
-from services.supabase import get_supabase
+from models.schemas import CaregiverLinkRequest, CurrentUser
 from services.drug_resolver import resolve_all_drugs
 from services.interactions import check_interactions_enterprise
+from services.supabase import get_supabase
 
 router = APIRouter(prefix="/caregiver", tags=["caregiver"])
 

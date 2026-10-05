@@ -6,6 +6,7 @@ drug_b, severity, clinical_effect, recommendation, and source. Deployments own
 the mapping from their licensed vendor SDK/API to this contract.
 """
 import httpx
+
 from config import get_settings
 
 

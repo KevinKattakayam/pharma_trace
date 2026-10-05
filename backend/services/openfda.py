@@ -3,19 +3,32 @@ OpenFDA API client for drug lookup, recall checking, and adverse event queries.
 Free API: https://api.fda.gov
 Rate limits: 240 req/min with API key, 1000/day without.
 """
-import httpx
-import asyncio
-from functools import lru_cache
 from typing import Optional
+
+import httpx
 
 OPENFDA_BASE = "https://api.fda.gov"
 
-# In-memory cache for NDC lookups
-_ndc_cache: dict[str, dict] = {}
-_label_cache: dict[str, dict] = {}
-_shortage_cache: dict[str, dict] = {}  # { key: { data, timestamp } }
+from services.ttl_cache import TTLCache
+
+# Bounded caches (audit R10). Registry records change rarely; shortages more often.
+_ndc_cache: TTLCache[dict] = TTLCache(maxsize=2048, ttl_seconds=12 * 3600)
+_label_cache: TTLCache[dict] = TTLCache(maxsize=2048, ttl_seconds=12 * 3600)
+_shortage_cache: TTLCache[dict] = TTLCache(maxsize=1024, ttl_seconds=6 * 3600)
+
+_MAX_TERM_LEN = 200
+
+
+def _esc(value: object) -> str:
+    """Escape a value for use inside a double-quoted openFDA (Elasticsearch) phrase.
+
+    Prevents callers from closing the phrase and injecting extra query clauses (audit S12).
+    """
+    text = "".join(ch for ch in str(value) if ch.isprintable())[:_MAX_TERM_LEN]
+    return text.replace("\\", "\\\\").replace('"', '\\"')
 from services.canonicalize import normalize_ndc
 from services.circuit_breaker import circuit_breaker
+
 
 @circuit_breaker(name="openfda", failure_threshold=3, recovery_timeout=30.0)
 async def lookup_by_ndc(ndc: str, api_key: str = "") -> Optional[dict]:
@@ -24,10 +37,10 @@ async def lookup_by_ndc(ndc: str, api_key: str = "") -> Optional[dict]:
     ndc_clean = ndc.strip().replace("-", "")
 
     # Check cache with canonical form first
-    if ndc_canonical in _ndc_cache:
-        return _ndc_cache[ndc_canonical]
-    elif ndc_clean in _ndc_cache:
-        return _ndc_cache[ndc_clean]
+    for key in (ndc_canonical, ndc_clean):
+        cached = _ndc_cache.get(key)
+        if cached is not None:
+            return cached
 
     # Try multiple NDC formats, starting with canonical
     search_terms = [ndc_canonical, ndc, ndc_clean]
@@ -49,7 +62,7 @@ async def lookup_by_ndc(ndc: str, api_key: str = "") -> Optional[dict]:
     async with httpx.AsyncClient(timeout=15.0) as client:
         for term in search_terms:
             try:
-                params = {"search": f'product_ndc:"{term}" OR packaging.package_ndc:"{term}"', "limit": 1}
+                params = {"search": f'product_ndc:"{_esc(term)}" OR packaging.package_ndc:"{_esc(term)}"', "limit": 1}
                 if api_key:
                     params["api_key"] = api_key
 
@@ -71,12 +84,13 @@ async def lookup_by_ndc(ndc: str, api_key: str = "") -> Optional[dict]:
 async def lookup_by_name(drug_name: str, api_key: str = "") -> Optional[dict]:
     """Look up a drug by brand or generic name via OpenFDA labels."""
     cache_key = drug_name.lower().strip()
-    if cache_key in _label_cache:
-        return _label_cache[cache_key]
+    cached = _label_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     async with httpx.AsyncClient(timeout=15.0) as client:
         try:
-            search = f'openfda.brand_name:"{drug_name}" OR openfda.generic_name:"{drug_name}"'
+            search = f'openfda.brand_name:"{_esc(drug_name)}" OR openfda.generic_name:"{_esc(drug_name)}"'
             params = {"search": search, "limit": 1}
             if api_key:
                 params["api_key"] = api_key
@@ -99,9 +113,9 @@ async def get_drug_label(ndc: str = None, drug_name: str = None, api_key: str = 
     async with httpx.AsyncClient(timeout=15.0) as client:
         try:
             if ndc:
-                search = f'openfda.product_ndc:"{ndc}"'
+                search = f'openfda.product_ndc:"{_esc(ndc)}"'
             elif drug_name:
-                search = f'openfda.brand_name:"{drug_name}" OR openfda.generic_name:"{drug_name}"'
+                search = f'openfda.brand_name:"{_esc(drug_name)}" OR openfda.generic_name:"{_esc(drug_name)}"'
             else:
                 return None
 
@@ -124,11 +138,11 @@ async def check_recalls(ndc: str = None, drug_name: str = None, api_key: str = "
     async with httpx.AsyncClient(timeout=15.0) as client:
         try:
             if ndc and any(c.isalpha() for c in ndc):
-                search = f'product_description:"{ndc}" OR openfda.brand_name:"{ndc}" OR openfda.generic_name:"{ndc}"'
+                search = f'product_description:"{_esc(ndc)}" OR openfda.brand_name:"{_esc(ndc)}" OR openfda.generic_name:"{_esc(ndc)}"'
             elif ndc:
-                search = f'openfda.product_ndc:"{ndc}"'
+                search = f'openfda.product_ndc:"{_esc(ndc)}"'
             elif drug_name:
-                search = f'product_description:"{drug_name}" OR openfda.brand_name:"{drug_name}" OR openfda.generic_name:"{drug_name}"'
+                search = f'product_description:"{_esc(drug_name)}" OR openfda.brand_name:"{_esc(drug_name)}" OR openfda.generic_name:"{_esc(drug_name)}"'
             else:
                 return []
 
@@ -152,7 +166,7 @@ async def get_adverse_events(drug_name: str, limit: int = 10, api_key: str = "")
     async with httpx.AsyncClient(timeout=15.0) as client:
         try:
             params = {
-                "search": f'patient.drug.openfda.generic_name:"{drug_name.upper()}"',
+                "search": f'patient.drug.openfda.generic_name:"{_esc(drug_name.upper())}"',
                 "limit": limit
             }
             if api_key:
@@ -173,9 +187,9 @@ async def find_generics(substance_name: str, api_key: str = "") -> list[dict]:
 
     # Try multiple search strategies
     searches = [
-        f'openfda.substance_name:"{substance_name.upper()}"',
-        f'openfda.generic_name:"{substance_name.upper()}"',
-        f'active_ingredients.name:"{substance_name.upper()}"',
+        f'openfda.substance_name:"{_esc(substance_name.upper())}"',
+        f'openfda.generic_name:"{_esc(substance_name.upper())}"',
+        f'active_ingredients.name:"{_esc(substance_name.upper())}"',
     ]
 
     async with httpx.AsyncClient(timeout=15.0) as client:
@@ -248,19 +262,18 @@ def extract_openfda_info(ndc_result: dict) -> dict:
 
 async def check_drug_shortage(active_ingredient: str, api_key: str = "") -> dict:
     """Check FDA Drug Shortages endpoint for supply issues."""
-    import time
     cache_key = active_ingredient.strip().lower()
     
     cached = _shortage_cache.get(cache_key)
-    if cached and time.time() - cached["timestamp"] < 21600:  # 6 hours
-        return cached["data"]
+    if cached is not None:
+        return cached
     
     result = {"in_shortage": False, "reason": None, "status": None}
     
     async with httpx.AsyncClient(timeout=10.0) as client:
         try:
             params = {
-                "search": f'generic_name:"{active_ingredient}"',
+                "search": f'generic_name:"{_esc(active_ingredient)}"',
                 "limit": 5
             }
             if api_key:
@@ -281,6 +294,6 @@ async def check_drug_shortage(active_ingredient: str, api_key: str = "") -> dict
         except Exception:
             pass
     
-    _shortage_cache[cache_key] = {"data": result, "timestamp": time.time()}
+    _shortage_cache[cache_key] = result
     return result
 

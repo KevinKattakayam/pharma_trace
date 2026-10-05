@@ -39,7 +39,7 @@ const services = [
   { name: 'Supabase', status: 'optional', desc: 'PostgreSQL + PostGIS persistent storage (needs credentials)', free: true },
   { name: 'Web Speech API', status: 'active', desc: 'Voice interface (built into Chrome/Edge)', free: true },
   { name: 'Leaflet + CARTO', status: 'active', desc: 'Maps, heatmaps, tile layers', free: true },
-  { name: 'SHA-256 Chain', status: 'active', desc: 'Immutable hash-chained audit log (local)', free: true },
+  { name: 'SHA-256 Chain', status: 'active', desc: 'Tamper-evident hash-chained audit log', free: true },
 ];
 
 const pythonSDK = `# pip install httpx

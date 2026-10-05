@@ -1,0 +1,33 @@
+# One-command local stack:  cp backend/.env.example backend/.env && docker compose up --build
+# Web UI: http://localhost:8080   API docs: http://localhost:8080/api/docs
+services:
+  api:
+    build: ./backend
+    env_file: ./backend/.env
+    environment:
+      RATE_LIMIT_STORAGE_URI: redis://redis:6379/1
+      TRUSTED_PROXY_HOPS: "1"          # nginx in front
+      BATCH_ALERTS_DATA_PATH: ${BATCH_ALERTS_DATA_PATH:-}
+      LOCAL_STORE_PATH: /app/runtime/local_fallback.db   # writable volume; image FS is read-only
+    volumes:
+      - api-data:/app/runtime
+    depends_on:
+      redis: { condition: service_healthy }
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    restart: unless-stopped
+  web:
+    build: ./frontend
+    ports: ["8080:8080"]
+    depends_on: [api]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck: { test: ["CMD", "redis-cli", "ping"], interval: 5s, retries: 10 }
+    restart: unless-stopped
+volumes:
+  api-data:

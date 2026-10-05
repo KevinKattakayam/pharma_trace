@@ -1,0 +1,11 @@
+[
+  {"batch_number": "SMPL-T2401", "product_name": "Paracetamol Tablets IP 500 mg", "category": "nsq", "alert_month": "2026-05",
+   "manufacturer": "Example Pharma Ltd (FICTIONAL)", "reason": "Dissolution (SAMPLE DATA)", "reporting_lab": "SAMPLE LAB",
+   "source": "SAMPLE", "source_url": "https://example.invalid/sample", "dataset": "SAMPLE"},
+  {"batch_number": "SMPL-A0099", "product_name": "Amoxycillin and Potassium Clavulanate Tablets", "category": "spurious", "alert_month": "2026-06",
+   "manufacturer": "Example Labs (FICTIONAL)", "reason": "Identification failed (SAMPLE DATA)", "reporting_lab": "SAMPLE LAB",
+   "source": "SAMPLE", "source_url": "https://example.invalid/sample", "dataset": "SAMPLE"},
+  {"batch_number": "SMPL-M0O12", "product_name": "Metformin Hydrochloride Tablets IP", "category": "misbranded", "alert_month": "2026-08",
+   "manufacturer": "Example Formulations (FICTIONAL)", "reason": "Labelling (SAMPLE DATA)", "reporting_lab": "SAMPLE LAB",
+   "source": "SAMPLE", "source_url": "https://example.invalid/sample", "dataset": "SAMPLE"}
+]

@@ -1,6 +1,7 @@
 """Safety-case workflow: triage, quarantine and resolution of medicine incidents."""
 import uuid
 from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException
 
 from dependencies import require_current_user

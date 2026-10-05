@@ -1,5 +1,6 @@
 import re
-from datetime import datetime, date
+from datetime import date
+
 from dateutil import parser as dateparser
 
 EXPIRY_PATTERNS = [

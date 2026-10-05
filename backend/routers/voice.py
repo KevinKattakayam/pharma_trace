@@ -1,7 +1,7 @@
 """
 Voice API router for vernacular audio transcription.
 """
-from fastapi import APIRouter, HTTPException, UploadFile, File, WebSocket
+from fastapi import APIRouter, File, HTTPException, UploadFile, WebSocket
 from pydantic import BaseModel
 
 router = APIRouter(prefix="/voice", tags=["voice"])

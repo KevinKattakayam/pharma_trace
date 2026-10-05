@@ -2,13 +2,16 @@
 Enterprise Multi-Tier Drug Resolver.
 Resolves raw, misspelled, or brand drug names to their exact canonical generic equivalents using a cascade of exact and fuzzy matchers.
 """
-import httpx
 import asyncio
-import structlog
-from rapidfuzz import fuzz, process as rfuzz_process
 from typing import Optional
-from services.circuit_breaker import circuit_breaker
+
+import httpx
+import structlog
+from rapidfuzz import fuzz
+from rapidfuzz import process as rfuzz_process
+
 from services.cache_manager import get_cache
+from services.circuit_breaker import circuit_breaker
 
 logger = structlog.get_logger()
 

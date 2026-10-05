@@ -50,7 +50,7 @@ export default function CabinetPage() {
       const reg = await navigator.serviceWorker.ready;
       
       const padding = '='.repeat((4 - public_key.length % 4) % 4);
-      const base64 = (public_key + padding).replace(/\-/g, '+').replace(/_/g, '/');
+      const base64 = (public_key + padding).replace(/-/g, '+').replace(/_/g, '/');
       const rawData = window.atob(base64);
       const outputArray = new Uint8Array(rawData.length);
       for (let i = 0; i < rawData.length; ++i) {

@@ -1,5 +1,7 @@
-from typing import Tuple, List, Optional
+from typing import List, Optional, Tuple
+
 from models.schemas import EvidenceItem
+
 
 def bayesian_confidence(evidence_keys: list[str]) -> int:
     """Deprecated compatibility function.
@@ -9,26 +11,66 @@ def bayesian_confidence(evidence_keys: list[str]) -> int:
     """
     return 0
 
+# Negative-evidence codes that make a pack "suspicious" (ADR-0004). Each is a concrete,
+# observable problem, unlike the former ``confidence < 50`` rule, which fired on every
+# scan because confidence is always 0 without an authoritative serial check.
+SUSPICION_CODES = {
+    "serial_rejected": "Authorised serial-verification service rejected this pack.",
+    "active_recall": "An active recall or regulator alert matches this product.",
+    "batch_alert": "This batch number appears on a regulator quality alert.",
+    "invalid_check_digit": "Barcode check digit is invalid (misprint or tampering).",
+    "registry_miss": "Product was not found in any consulted registry.",
+    "expired": "Pack is past its printed expiry date.",
+    "label_inconsistent": "Label/QR data is internally inconsistent.",
+    "vision_high_suspicion": "Image analysis flagged visible packaging anomalies.",
+}
+
+
+def assess_verdict(
+    *,
+    serial_verification: Optional[bool] = None,
+    no_active_recall: Optional[bool] = None,
+    registry_match: Optional[bool] = None,
+    integrity_flags: Optional[List[str]] = None,
+    confidence: float = 0.0,
+) -> Tuple[str, List[str]]:
+    """Return ``(verdict, reason_codes)``.
+
+    * ``authentic`` and ``counterfeit`` are reserved for an authoritative serial response.
+    * ``suspicious`` requires at least one concrete negative-evidence code.
+    * Everything else is ``unknown``: a record match only, which still requires review.
+    """
+    reasons: List[str] = [f for f in (integrity_flags or []) if f in SUSPICION_CODES]
+    if serial_verification is False:
+        return "counterfeit", ["serial_rejected", *reasons]
+    if no_active_recall is False:
+        reasons.insert(0, "active_recall")
+    if registry_match is False:
+        reasons.append("registry_miss")
+    if reasons:
+        return "suspicious", list(dict.fromkeys(reasons))
+    if serial_verification is True and no_active_recall is True and confidence >= 80:
+        return "authentic", []
+    return "unknown", []
+
+
 def determine_verdict(
     confidence: float,
     *,
     serial_verification: Optional[bool] = None,
     no_active_recall: Optional[bool] = None,
+    registry_match: Optional[bool] = None,
+    integrity_flags: Optional[List[str]] = None,
 ) -> str:
-    """Return a safety-first result, not an unvalidated probability claim.
+    """Backward-compatible wrapper around :func:`assess_verdict`."""
+    return assess_verdict(
+        serial_verification=serial_verification,
+        no_active_recall=no_active_recall,
+        registry_match=registry_match,
+        integrity_flags=integrity_flags,
+        confidence=confidence,
+    )[0]
 
-    Registry and barcode matches establish that a *record* may exist; they cannot
-    establish that a physical pack is genuine. ``authentic`` and ``counterfeit``
-    are therefore reserved for an authoritative manufacturer/distributor serial
-    response. All other cases require review when a decision matters.
-    """
-    if serial_verification is True and no_active_recall is True and confidence >= 80:
-        return "authentic"
-    if serial_verification is False:
-        return "counterfeit"
-    if no_active_recall is False or confidence < 50:
-        return "suspicious"
-    return "unknown"
 
 def compute_confidence(
     barcode_valid: bool,
@@ -46,14 +88,14 @@ def compute_confidence(
         evidence.append(EvidenceItem(
             check="openfda_match",
             status="pass",
-            description="Verified against live OpenFDA database",
+            description="A matching record exists in a consulted registry (record match only, not proof the pack is genuine).",
             weight=0.0
         ))
     else:
         evidence.append(EvidenceItem(
             check="openfda_match",
             status="fail",
-            description="NDC not found in OpenFDA database",
+            description="No matching record found in the consulted registries.",
             weight=0.0
         ))
         

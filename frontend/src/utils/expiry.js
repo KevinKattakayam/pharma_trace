@@ -1,5 +1,5 @@
 const EXPIRY_PATTERNS = [
-  /exp[iry\s:\.]*(\d{2}[/-]\d{2,4})/i,
+  /exp[iry\s:.]*(\d{2}[/-]\d{2,4})/i,
   /use\s+before[:\s]+(\w+\s+\d{4})/i,
   /best\s+before[:\s]+(\w+\s+\d{4})/i,
   /expiry[:\s]+(\d{2}[/-]\d{2,4})/i,

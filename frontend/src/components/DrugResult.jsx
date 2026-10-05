@@ -1,3 +1,4 @@
+import SafetyIntelPanel from './SafetyIntelPanel';
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import ConfidenceGauge from './ConfidenceGauge';
@@ -240,11 +241,12 @@ export default function DrugResult({ data, onRecheck }) {
         </div>
 
         {/* Clinical Evidence Section */}
+        <SafetyIntelPanel data={data} />
         {data.evidence?.length > 0 && (
           <div className="drug-result__section" style={{ marginTop: '2rem' }}>
             <div className="drug-result__section-title">
               <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                {Icons.evidence} Clinical Evidence Trail
+                {Icons.evidence} What we checked
               </span>
             </div>
             <ul className="evidence-list">

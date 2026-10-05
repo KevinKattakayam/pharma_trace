@@ -1,0 +1,74 @@
+name: CI
+on:
+  pull_request:
+  push:
+    branches: [main, "upgrade/**"]
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: backend } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12", cache: pip, cache-dependency-path: backend/requirements*.txt }
+      - run: pip install -r requirements-dev.txt
+      - name: Lint (strict on rewritten modules)
+        run: ruff check $(cat ../.strict-lint-paths)
+      - name: Lint ratchet (legacy debt may only shrink)
+        run: ../scripts/lint_ratchet.sh
+      - name: Tests + coverage gate on safety-critical modules
+        run: |
+          python -m pytest --cov=. --cov-report=xml --cov-report=term
+          python -m coverage report --include="services/confidence.py,services/security.py,services/batch_alerts.py,services/pack_check.py,services/gs1.py,services/audit.py" --fail-under=80
+      - name: Synthetic eval smoke (not a benchmark)
+        run: python -m eval.run_eval eval/cases.synthetic.json --allow-synthetic
+      - name: Dependency audit
+        run: pip-audit -r requirements.txt
+      - name: SAST (bandit, medium+)
+        run: bandit -q -r . -x ./tests,./venv -ll
+      - name: Production config refuses defaults
+        run: |
+          ! ENVIRONMENT=prod python -c "from config import Settings; Settings(_env_file=None)" 2>/dev/null
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: frontend } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm, cache-dependency-path: frontend/package-lock.json }
+      - run: npm ci
+      - run: npx eslint src --quiet
+      - run: npm test
+      - run: npm run build
+      - run: npm audit --omit=dev --audit-level=high
+
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  containers:
+    runs-on: ubuntu-latest
+    needs: [backend, frontend]
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t pharmatrace-api:ci backend && docker build -t pharmatrace-web:ci frontend
+      - name: Container scan (Trivy)
+        uses: aquasecurity/trivy-action@0.35.0
+        with: { image-ref: pharmatrace-api:ci, severity: "CRITICAL,HIGH", exit-code: "1", ignore-unfixed: true }
+      - name: Smoke test
+        run: |
+          docker run -d --name api -e ENVIRONMENT=dev -p 8000:8000 pharmatrace-api:ci
+          for i in $(seq 1 30); do curl -fs localhost:8000/api/v1/health && break; sleep 1; done
+          curl -fs localhost:8000/api/v1/capabilities

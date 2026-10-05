@@ -3,12 +3,14 @@ Groq LLM service for fast AI inference.
 Uses Llama 3.3 70B for drug analysis, side-effect rewriting, and interaction explanation.
 Groq provides free tier with extremely fast inference (~500 tok/s).
 """
-import httpx
 import json
 from typing import Optional
+
+import httpx
+
 from config import get_settings
 from services.circuit_breaker import circuit_breaker
-from services.compliance import sanitize_phi, restore_phi
+from services.compliance import restore_phi, sanitize_phi
 
 GROQ_BASE = "https://api.groq.com/openai/v1"
 
@@ -158,6 +160,7 @@ async def ai_analyze_drug(drug_name: str, patient_info: dict = None) -> Optional
     backed by a persistent 30-day semantic cache layer.
     """
     import time
+
     from services.supabase import get_supabase
     db = get_supabase()
     

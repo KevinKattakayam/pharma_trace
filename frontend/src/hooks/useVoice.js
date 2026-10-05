@@ -19,7 +19,9 @@ export function useVoiceStreaming(onPartial, onFinal) {
 
   const connectWebSocket = (stream, langHint) => {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = process.env.VITE_API_URL ? new URL(process.env.VITE_API_URL).host : window.location.host;
+    // `process` does not exist in the browser (was a runtime ReferenceError); Vite exposes import.meta.env.
+    const apiUrl = import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL;
+    const host = apiUrl && /^https?:/.test(apiUrl) ? new URL(apiUrl).host : window.location.host;
     const wsUrl = `${protocol}//${host}/api/v1/voice/stream?lang=${langHint}`;
     
     const ws = new WebSocket(wsUrl);

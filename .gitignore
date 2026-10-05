@@ -8,3 +8,14 @@ frontend/.vite/
 *.log
 .env
 .env.*
+# runtime state & build artefacts
+backend/data/local_fallback.db*
+backend/data/*.db-wal
+backend/data/*.db-shm
+.coverage
+coverage.xml
+htmlcov/
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+backend/data/pdfs/

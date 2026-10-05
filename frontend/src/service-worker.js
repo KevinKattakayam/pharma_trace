@@ -169,7 +169,7 @@ async function processCustomSyncQueue() {
            // OCC CONFLICT: Server state has diverged from the offline snapshot.
            // Mark item as conflicted and notify UI for manual 3-way reconciliation.
            let serverDelta = null;
-           try { serverDelta = await response.json(); } catch (_) {}
+           try { serverDelta = await response.json(); } catch { serverDelta = null; /* non-JSON conflict body */ }
            await new Promise(r => {
              const tx = db.transaction(['sync_queue'], 'readwrite');
              tx.objectStore('sync_queue').put({

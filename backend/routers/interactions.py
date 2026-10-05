@@ -2,6 +2,7 @@
 Drug interaction checking router.
 """
 from fastapi import APIRouter
+
 from models.schemas import InteractionCheckRequest, InteractionResponse
 from services.interactions import check_all_interactions
 

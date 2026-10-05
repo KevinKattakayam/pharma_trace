@@ -2,10 +2,11 @@
 Enterprise Regulatory Compliance & PHI/PII Tokenization Gateway.
 Enforces HIPAA, 21 CFR Part 11, and India DPDP Act 2023 compliance by tokenizing sensitive data before LLM transmission.
 """
-import re
-import hmac
 import hashlib
-from typing import Tuple, Dict, Any
+import hmac
+import re
+from typing import Any, Dict, Tuple
+
 from config import get_settings
 
 # Regex patterns for sensitive Indian & global medical PII/PHI
@@ -97,8 +98,9 @@ def restore_phi(text: str, token_map: Dict[str, str]) -> str:
 async def log_compliance_event(user_id: str, action: str, details: Dict[str, Any]):
     """Log an immutable WORM audit record for PHI access or compliance events."""
     try:
-        from services.audit import add_audit_record
         import uuid
+
+        from services.audit import add_audit_record
         event_id = f"COMPLIANCE-{uuid.uuid4().hex[:8].upper()}"
         await add_audit_record(event_id, {
             "verdict": "compliance_log",

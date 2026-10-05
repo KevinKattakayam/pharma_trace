@@ -3,12 +3,12 @@ CDSCO PDF Parser & SQLite Database Builder
 Downloads CDSCO's new drug approval PDFs, parses them with pdfplumber, and creates a local SQLite database.
 Run this as a monthly cron job to maintain a localized, non-hallucinated Indian drug registry.
 """
-import os
+import logging
 import sqlite3
+from pathlib import Path
+
 import httpx
 import pdfplumber
-from pathlib import Path
-import logging
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("build_cdsco")

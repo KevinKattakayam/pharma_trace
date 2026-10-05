@@ -7,9 +7,7 @@ present in the raw FDA label text is preserved in the LLM's patient-friendly rew
 
 If any MedDRA safety signal is dropped by the LLM, the system falls back to raw FDA text.
 """
-import re
 import logging
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 

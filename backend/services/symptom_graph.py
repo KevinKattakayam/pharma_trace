@@ -3,13 +3,12 @@ Symptom-to-drug safety checker using LangGraph and Groq.
 Identifies OTC medicines for symptoms, screens against India Schedule H/H1/X restrictions,
 and evaluates cumulative regimen safety (therapeutic duplication, eGFR/hepatic contraindications).
 """
-from typing import TypedDict, Optional, Any
-from langgraph.graph import StateGraph, END
-import json
+from typing import Optional, TypedDict
+
 import structlog
+from langgraph.graph import END, StateGraph
+
 from config import get_settings
-from services.circuit_breaker import circuit_breaker
-from services.compliance import sanitize_phi, restore_phi
 from services.groq_ai import _groq_chat
 
 logger = structlog.get_logger()

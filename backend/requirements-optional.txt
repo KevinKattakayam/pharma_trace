@@ -1,0 +1,4 @@
+# Optional integrations. Code degrades gracefully (and logs once) when these are absent.
+redis>=5.0          # shared rate-limit + cache storage across workers (RATE_LIMIT_STORAGE_URI=redis://...)
+asyncpg>=0.29       # direct Postgres pool (services/db_pool.py)
+langfuse>=2.0       # LLM tracing for the LangGraph pipeline

@@ -1,8 +1,10 @@
 import asyncio
-import time
 import os
+
+from pywebpush import WebPushException, webpush
+
 from services.supabase import get_supabase
-from pywebpush import webpush, WebPushException
+
 
 async def process_refills():
     db = get_supabase()

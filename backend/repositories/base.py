@@ -7,9 +7,9 @@ allowing Postgres RLS policies to enforce row-level access control natively.
 Even if a developer writes a buggy query without a WHERE clause, Postgres
 physically refuses to return rows belonging to another clinic tenant.
 """
-from typing import List, Dict, Any, Optional
+from typing import Any, Dict, List, Optional
+
 from services.supabase import get_supabase
-from models.exceptions import DatabaseReadError
 
 
 class BaseRepository:
@@ -27,8 +27,10 @@ class BaseRepository:
 
     table_name: str = ""
 
-    def __init__(self):
-        self.db = get_supabase()
+    @property
+    def db(self):
+        # Resolved per call so tests (and future multi-tenant clients) can swap the backend.
+        return get_supabase()
 
     def _rls_headers(self, user_context: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
         """

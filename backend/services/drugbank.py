@@ -6,9 +6,11 @@ Drug interaction service using real-time APIs:
 
 No hardcoded/dummy data. Every interaction is fetched live from FDA databases.
 """
-import httpx
 import json
 from typing import Optional
+
+import httpx
+
 from config import get_settings
 
 OPENFDA_BASE = "https://api.fda.gov"

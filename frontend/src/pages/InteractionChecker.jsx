@@ -50,7 +50,7 @@ export default function InteractionChecker() {
         {/* Header Block */}
         <div style={{ marginBottom: '3rem' }} className="anim">
           <div className="hero__tag" style={{ marginBottom: '0.75rem' }}>
-            <span className="hero__tag-dot" /> Clinical Safety Protocol v3.4
+            <span className="hero__tag-dot" /> General information, not advice
           </div>
           <h1 style={{ fontSize: '2.5rem', fontWeight: 900, letterSpacing: '-0.04em', lineHeight: 1.1, marginBottom: '0.75rem' }}>
             Interaction Intelligence
@@ -141,7 +141,7 @@ export default function InteractionChecker() {
                  </div>
 
                  <div className="card" style={{ padding: '1.5rem' }}>
-                    <div style={{ fontSize: '0.625rem', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--text-3)', marginBottom: '1.25rem' }}>Co-occurrence Matrix</div>
+                    <div style={{ fontSize: '0.625rem', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--text-3)', marginBottom: '1.25rem' }}>Medicines checked together</div>
                     <div className="mini-matrix">
                         <table>
                           <tbody>
@@ -218,7 +218,7 @@ function InteractionCard({ ix, index, ai, onExplain }) {
           background: 'rgba(255,255,255,0.03)', padding: '0.75rem', borderRadius: '8px', 
           fontSize: '0.75rem', color: 'var(--safe)', border: '1px solid rgba(0,229,191,0.1)' 
         }}>
-          <strong>Protocol:</strong> {ix.recommendation}
+          <strong>What to do:</strong> {ix.recommendation}
         </div>
       )}
 
@@ -226,7 +226,7 @@ function InteractionCard({ ix, index, ai, onExplain }) {
         <div className="ai-overlay anim-scale" style={{ marginTop: '1rem', borderTop: '1px solid var(--border-1)', paddingTop: '1rem' }}>
            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.75rem' }}>
              <span style={{ color: 'var(--accent)' }}>{Icons.brain}</span>
-             <span style={{ fontSize: '0.6875rem', fontWeight: 800, textTransform: 'uppercase', color: 'var(--text-2)' }}>Neural Logic Chain</span>
+             <span style={{ fontSize: '0.6875rem', fontWeight: 800, textTransform: 'uppercase', color: 'var(--text-2)' }}>How this was worked out</span>
            </div>
            <p style={{ fontSize: '0.8125rem', color: 'var(--text-3)', lineHeight: 1.6 }}>{ai.data.explanation}</p>
            {ai.data.what_to_do && (

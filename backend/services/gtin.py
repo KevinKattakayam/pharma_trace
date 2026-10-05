@@ -4,8 +4,6 @@ Validates international pharmaceutical barcodes (GTIN-8, GTIN-12, GTIN-13, GTIN-
 Parses GS1 DataMatrix barcodes with Application Identifiers (AI) for lot, expiry, serial.
 """
 import re
-from datetime import datetime
-from typing import Optional
 
 
 def validate_gtin(barcode: str) -> dict:
@@ -85,175 +83,7 @@ def validate_gtin(barcode: str) -> dict:
     return result
 
 
-def parse_cdsco_barcode(data: str) -> dict:
-    """
-    Parse Indian CDSCO (Schedule H / Top 300) mandatory QR code format.
-    Handles JSON and Pipe-delimited structures encoding the 8 mandatory fields
-    specified by GSR 823(E).
-    """
-    result = {
-        "valid": False,
-        "format": "CDSCO",
-        "gtin": None,
-        "brand_name": None,
-        "generic_name": None,
-        "manufacturer": None,
-        "batch_no": None,
-        "mfg_date": None,
-        "expiry_date": None,
-        "mfg_license": None,
-        "mrp": None,
-        "raw": data
-    }
-    
-    # Clean data (sometimes prepended with URLs)
-    clean_data = data
-    if "qr.cdsco.gov.in" in data or "http" in data:
-        # Attempt to extract payload if it's base64 or URL encoded in a query param
-        try:
-            from urllib.parse import urlparse, parse_qs
-            parsed_url = urlparse(data)
-            qs = parse_qs(parsed_url.query)
-            if 'data' in qs:
-                clean_data = qs['data'][0]
-            elif 'd' in qs:
-                clean_data = qs['d'][0]
-        except Exception:
-            pass
 
-    import json
-    # Try parsing as JSON
-    try:
-        parsed = json.loads(clean_data)
-        if isinstance(parsed, dict):
-            # Map standard keys
-            result["gtin"] = parsed.get("UPI") or parsed.get("GTIN") or parsed.get("upi")
-            result["generic_name"] = parsed.get("API") or parsed.get("Generic") or parsed.get("api")
-            result["brand_name"] = parsed.get("Brand") or parsed.get("brand")
-            result["manufacturer"] = parsed.get("Mfg") or parsed.get("Manufacturer") or parsed.get("mfg")
-            result["batch_no"] = parsed.get("Batch") or parsed.get("batch") or parsed.get("Lot")
-            result["mfg_date"] = parsed.get("MFD") or parsed.get("mfd") or parsed.get("MfgDate")
-            result["expiry_date"] = parsed.get("EXP") or parsed.get("exp") or parsed.get("ExpDate")
-            result["mfg_license"] = parsed.get("Lic") or parsed.get("lic") or parsed.get("License")
-            result["mrp"] = parsed.get("MRP") or parsed.get("mrp") or parsed.get("Price")
-            
-            # G.S.R. 823(E) requires all 8 mandatory fields:
-            # UPI/GTIN, generic name, batch, expiry, mfg date, MRP, manufacturer, brand
-            mandatory = [
-                result["gtin"], result["generic_name"], result["batch_no"],
-                result["expiry_date"], result["mfg_date"], result["manufacturer"],
-                result["brand_name"], result["mrp"]
-            ]
-            if all(mandatory):
-                result["valid"] = True
-                return result
-            # Incomplete — fall through to GS1 pipeline
-    except json.JSONDecodeError:
-        pass
-
-    # Try parsing as Pipe-delimited (UPI|Generic|Brand|Mfg|Batch|MFD|EXP|MRP|Lic)
-    parts = clean_data.split('|')
-    if len(parts) >= 8:
-        result["gtin"] = parts[0]
-        result["generic_name"] = parts[1]
-        result["brand_name"] = parts[2]
-        result["manufacturer"] = parts[3]
-        result["batch_no"] = parts[4]
-        result["mfg_date"] = parts[5]
-        result["expiry_date"] = parts[6]
-        result["mrp"] = parts[7]
-        if len(parts) > 8:
-            result["mfg_license"] = parts[8]
-            
-        # Strict: all 8 mandatory fields must be present and non-empty
-        mandatory = [
-            result["gtin"], result["generic_name"], result["batch_no"],
-            result["expiry_date"], result["mfg_date"], result["manufacturer"],
-            result["brand_name"], result["mrp"]
-        ]
-        if all(f and str(f).strip() for f in mandatory):
-            result["valid"] = True
-            return result
-        # Incomplete — fall through
-
-    return result
-
-def parse_gs1_datamatrix(data: str) -> dict:
-    """
-    Parse GS1 DataMatrix or GS1-128 barcode data with Application Identifiers.
-    Common pharmaceutical AIs:
-    - (01) GTIN
-    - (10) Batch/Lot number
-    - (17) Expiry date (YYMMDD)
-    - (21) Serial number
-    - (30) Quantity
-    """
-    result = {
-        "raw": data,
-        "gtin": None,
-        "lot": None,
-        "expiry_date": None,
-        "serial_number": None,
-        "quantity": None,
-        "parsed_fields": []
-    }
-
-    # Remove FNC1 character if present
-    cleaned = data.replace('\x1d', '|').replace('\\x1d', '|')
-
-    # AI patterns (fixed-length and variable-length)
-    ai_patterns = {
-        "01": {"name": "GTIN", "length": 14, "key": "gtin"},
-        "10": {"name": "Batch/Lot", "length": None, "key": "lot"},
-        "17": {"name": "Expiry Date", "length": 6, "key": "expiry_date"},
-        "21": {"name": "Serial Number", "length": None, "key": "serial_number"},
-        "30": {"name": "Quantity", "length": None, "key": "quantity"},
-    }
-
-    pos = 0
-    while pos < len(cleaned):
-        matched = False
-        # Try 2-digit AIs
-        for ai_code, ai_info in ai_patterns.items():
-            if cleaned[pos:pos + len(ai_code)] == ai_code:
-                pos += len(ai_code)
-                if ai_info["length"]:
-                    value = cleaned[pos:pos + ai_info["length"]]
-                    pos += ai_info["length"]
-                else:
-                    # Variable length — read until FNC1 separator or end
-                    end = cleaned.find('|', pos)
-                    if end == -1:
-                        end = len(cleaned)
-                    value = cleaned[pos:end]
-                    pos = end + 1
-
-                result[ai_info["key"]] = value
-                result["parsed_fields"].append({
-                    "ai": ai_code,
-                    "name": ai_info["name"],
-                    "value": value
-                })
-                matched = True
-                break
-
-        if not matched:
-            pos += 1
-
-    # Parse expiry date
-    if result["expiry_date"] and len(result["expiry_date"]) == 6:
-        try:
-            yy = int(result["expiry_date"][:2])
-            mm = int(result["expiry_date"][2:4])
-            dd = int(result["expiry_date"][4:6]) or 28
-            year = 2000 + yy
-            expiry = datetime(year, mm, min(dd, 28))
-            result["expiry_parsed"] = expiry.strftime("%Y-%m-%d")
-            result["expired"] = expiry < datetime.now()
-        except (ValueError, OverflowError):
-            pass
-
-    return result
 
 
 def get_country_from_prefix(prefix: str) -> str:
@@ -386,3 +216,40 @@ def get_country_from_prefix(prefix: str) -> str:
         "958": "Macau",
     }
     return prefix_map.get(prefix, f"Unknown (prefix {prefix})")
+
+
+def parse_cdsco_barcode(data: str) -> dict:
+    """India GSR 823(E) pack code → legacy dict shape (delegates to ``services.india_qr``).
+
+    ``valid`` now means "recognised as a GSR 823(E) payload" (≥3 particulars). It says nothing
+    about authenticity. ``complete`` is true only when all eight particulars are present.
+    """
+    from services import india_qr
+
+    r = india_qr.parse(data)
+    return {
+        "valid": r["recognised"],
+        "complete": r["complete"],
+        "format": "CDSCO",
+        "gtin": r["upic"],
+        "upic": r["upic"],
+        "brand_name": r["brand_name"],
+        "generic_name": r["generic_name"],
+        "manufacturer": r["manufacturer"],
+        "batch_no": r["batch_no"],
+        "mfg_date": r["mfg_date"],
+        "expiry_date": r["expiry_date"],
+        "mfg_license": r["mfg_license"],
+        "mrp": r["mrp"],
+        "particulars_missing": r["particulars_missing"],
+        "raw": data,
+    }
+
+
+def parse_gs1_datamatrix(data: str) -> dict:
+    """GS1 AI element string / HRI / Digital Link → legacy dict shape (delegates to ``services.gs1``)."""
+    from services import gs1
+
+    r = gs1.parse(data)
+    qty = next((f["value"] for f in r["parsed_fields"] if f["ai"] == "30"), None)
+    return {**r, "quantity": qty}
