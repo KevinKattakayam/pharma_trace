@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { WHAT_WE_DO } from '../utils/copy';
 import { useNavigate } from 'react-router-dom';
 
 const I = ({ d, size = 20 }) => (
@@ -139,19 +140,19 @@ const AGENTS = [
 ];
 
 const FEATURES = [
-  { d: SCAN_D, l: 'Medication verification', s: 'Scan barcodes, NDC packages, or blister cards and review the available regulatory evidence.', c: 'var(--action)', bg: 'var(--action-dim)', big: true },
-  { d: 'M1 6l7-3 8 3 7-3v15l-7 3-8-3-7 3V6zM8 3v15M16 6v15', l: 'Real-Time Outbreak Map', s: 'Interactive geospatial heatmap tracking counterfeit clusters and pharmacy trust scores across regions.', c: 'var(--danger)', bg: 'var(--danger-bg)', big: true },
-  { d: 'M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8z', l: 'Smart Clinical Cabinet', s: 'Digital inventory management with automatic expiration tracking and cross-drug safety monitoring.', c: 'var(--safe)', bg: 'var(--safe-bg)' },
-  { d: 'M1 6s4-4 11-4 11 4 11 4M5 10s2.5-2 7-2 7 2 7 2M8.5 14s1.5-1 3.5-1 3.5 1M2 2l20 20', l: 'Zero-Latency Edge Mode', s: 'IndexedDB caching and Bloom filters enable instantaneous offline verification in remote clinical settings.', c: 'var(--safe)', bg: 'var(--safe-bg)' },
-  { d: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z', l: 'High-Throughput Batch', s: 'Rapid multi-scan workflow engineered for hospital pharmacies, clinics, and supply chain distributors.', c: 'var(--warn)', bg: 'var(--warn-bg)' },
-  { d: PULSE_D, l: 'Regimen review', s: 'Review potential drug interactions alongside patient context and clear safety guidance.', c: 'var(--accent)', bg: 'var(--accent-dim)' },
+  { d: SCAN_D, l: 'Check a medicine', s: 'Scan the barcode or QR code on a pack and see what official records say about it.', c: 'var(--action)', bg: 'var(--action-dim)', big: true },
+  { d: 'M1 6l7-3 8 3 7-3v15l-7 3-8-3-7 3V6zM8 3v15M16 6v15', l: 'Reports map', s: 'See where people have reported suspicious medicines, and find pharmacies near you.', c: 'var(--danger)', bg: 'var(--danger-bg)', big: true },
+  { d: 'M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8z', l: 'Medicine cabinet', s: 'Keep track of what is at home, who it is for, and when it expires.', c: 'var(--safe)', bg: 'var(--safe-bg)' },
+  { d: 'M1 6s4-4 11-4 11 4 11 4M5 10s2.5-2 7-2 7 2 7 2M8.5 14s1.5-1 3.5-1 3.5 1M2 2l20 20', l: 'Works without internet', s: 'Recent data is saved on your phone, so you can still check a pack when the network is down.', c: 'var(--safe)', bg: 'var(--safe-bg)' },
+  { d: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z', l: 'Check a delivery', s: 'Scan many packs one after another and get a single summary at the end.', c: 'var(--warn)', bg: 'var(--warn-bg)' },
+  { d: PULSE_D, l: 'Medicines taken together', s: 'See known interactions between the medicines someone is taking.', c: 'var(--accent)', bg: 'var(--accent-dim)' },
 ];
 
 const TRUST = [
-  { d: LOCK_D, t: 'Zero-Knowledge Privacy', s: 'No patient IP or personal health data is ever stored or logged.' },
-  { d: LINK_D, t: 'SHA-256 Audit Trail', s: 'Every verification is cryptographically hash-chained for tamper-evidence.' },
-  { d: SHIELD_D, t: 'Live Regulatory Data', s: 'Direct synchronization with FDA, CDSCO, and NIH RxNorm databases.' },
-  { d: 'M3 3h7v7H3zM14 3h7v7h-7zM14 14h7v7h-7zM3 14h7v7H3z', t: 'Open Architecture', s: 'Transparent Python & React stack audited against enterprise clinical standards.' },
+  { d: LOCK_D, t: WHAT_WE_DO[2].t, s: WHAT_WE_DO[2].s },
+  { d: LINK_D, t: WHAT_WE_DO[3].t, s: WHAT_WE_DO[3].s },
+  { d: SHIELD_D, t: WHAT_WE_DO[1].t, s: WHAT_WE_DO[1].s },
+  { d: 'M3 3h7v7H3zM14 3h7v7h-7zM14 14h7v7h-7zM3 14h7v7H3z', t: WHAT_WE_DO[0].t, s: WHAT_WE_DO[0].s },
 ];
 
 /* ── Live Stats Bar ── */

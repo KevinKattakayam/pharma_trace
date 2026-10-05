@@ -56,3 +56,19 @@ All notable changes to this project are documented here. Format follows
 - Eval harness scaffold and reviewed-CSV regulator alert importer.
 - Consolidated docs: README (claims match code), SAFETY, ARCHITECTURE, DEPLOYMENT, RUNBOOK, PRIVACY, API_CHANGES, SECURITY, CONTRIBUTING, FINAL_REPORT. Removed 5 overlapping guides, 7 deploy scripts, duplicate `railway.toml`, committed PDFs and runtime DB.
 - `RATE_LIMIT_ENABLED` ops switch.
+
+### Phase 7: making dummy things real
+- **Database**: `phase5_audit_chain.sql` now tested on real PostgreSQL 16 (7 tests: idempotent, hashes equal Python's incl. Unicode, edits/deletes/truncate/forks blocked, 8 concurrent connections → one valid chain, upgrade from the legacy table). Removed the `pgcrypto` dependency (built-in `sha256()`).
+- **Schema contract test** records every table/column the app touches and checks them against the fully migrated database. It found 10 real defects (docs/AUDIT.md §5). New `phase6_schema_alignment.sql`; fixes in the base script and phase 2.
+- **Regulator alerts**: `scripts/cdsco_pdf_to_draft_csv.py` (draft extraction; never loadable), importer now **enforces** `reviewed_by`/`reviewed_at`/https source and rejects unresolved `CHECK` notes; API refuses to start with SAMPLE data in staging/prod.
+- **Pharmacies**: `scripts/import_osm_pharmacies.py` imports real OpenStreetMap listings as `osm_unverified` with ODbL attribution (UI shows it). Replaced the misleading "Trust Index" with a community rating; fixed stored XSS; "Verified Network" → "Pharmacies".
+- **Brands**: `scripts/import_brands.py` (every row needs a `source`); LASA ignores description-like registry rows.
+- **`scripts/doctor.py`**: lists exactly what is still dummy/unsafe; exit 1 on blockers.
+- Anonymous reports: failed saves now return 503 instead of fake success.
+
+### Phase 8: free data sources, price check, copy and UI
+- **NPPA ceiling-price check** (new): `services/price_check.py`, `POST /safety/price-check`, `/price-check/coverage`, a `/price-check` page, and integration into Pack Check and `/verify/barcode` (`units_in_pack`, `printed.mrp`). Conservative by design: exact formulation/form/strength match only, 2 % tolerance, near matches ask for confirmation, unlisted medicines return `not_scheduled`. An overcharge never changes the authenticity verdict.
+- `scripts/import_nppa_ceiling_prices.py` (reviewed CSV only, same two-person rule as alerts); sample price data clearly labelled and refused in staging/prod.
+- **`docs/DATA_SOURCES.md`**: every free source and key, what is built in vs a candidate, and the licence rules (ODbL attribution, Overpass/Nominatim limits, per-unit ex-GST prices).
+- **Copy rewritten** into plain language and centralised in `frontend/src/utils/copy.js` with tests that fail on jargon ("Geospatial Intel", "Zero-Knowledge Privacy", "Neural Logic Chain", "Threat Clusters", "Protocol", "Edge Mode" and similar are gone). `friendlyError()` turns HTTP failures into something a person can act on.
+- **UI**: a real typographic scale and spacing tokens, shared `PageHeader` and `ScopeNotice` components, consistent form fields with visible labels and hints, 16px inputs (no iOS zoom), 44px touch targets, visible focus rings, and `prefers-reduced-motion` support.

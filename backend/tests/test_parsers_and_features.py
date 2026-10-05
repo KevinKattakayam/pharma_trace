@@ -172,7 +172,8 @@ def test_lasa_phonetic_and_strength_stripping(lasa_corpus):
 
 
 def test_lasa_real_corpus_loads():
-    assert len(lasa.corpus()) > 2000
+    # ~2,000 registry rows are long product descriptions, not names, and are excluded (see plausible_name)
+    assert 100 < len(lasa.corpus()) < 1000
 
 
 # ── request validation & openFDA escaping ──

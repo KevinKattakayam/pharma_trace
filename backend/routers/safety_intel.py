@@ -11,7 +11,7 @@ from fastapi import APIRouter, HTTPException, Query
 from starlette.requests import Request
 
 from config import get_settings
-from models.schemas import LasaCheckRequest, PackCheckRequest
+from models.schemas import LasaCheckRequest, PackCheckRequest, PriceCheckRequest
 from services.limiter import limiter
 
 router = APIRouter(prefix="/safety", tags=["safety-intelligence"])
@@ -33,7 +33,8 @@ async def pack_check(request: Request, body: PackCheckRequest) -> dict[str, Any]
     if not body.qr_payload and not (body.printed and any(body.printed.model_dump().values())):
         raise HTTPException(status_code=422, detail="Provide qr_payload and/or printed label fields")
     from services.pack_check import check_pack
-    return check_pack(qr_payload=body.qr_payload, printed=body.printed.model_dump() if body.printed else None)
+    return check_pack(qr_payload=body.qr_payload, printed=body.printed.model_dump() if body.printed else None,
+                      units_in_pack=body.units_in_pack)
 
 
 @router.get("/batch-alerts")
@@ -55,6 +56,24 @@ async def batch_alerts_coverage() -> dict[str, Any]:
     """Which alert months are loaded, from where, and whether the data is a sample."""
     _require("feature_batch_alerts")
     from services.batch_alerts import get_index
+    return get_index().coverage()
+
+
+@router.post("/price-check")
+@limiter.limit("60/minute")
+async def price_check(request: Request, body: PriceCheckRequest) -> dict[str, Any]:
+    """Compare a printed MRP with the NPPA ceiling price for scheduled (essential) medicines."""
+    _require("feature_price_check")
+    from services.price_check import check_price
+    return check_price(drug_name=body.drug_name, printed_mrp=body.printed_mrp, units_in_pack=body.units_in_pack,
+                       dosage_form=body.dosage_form, strength=body.strength)
+
+
+@router.get("/price-check/coverage")
+async def price_check_coverage() -> dict[str, Any]:
+    """Which ceiling-price data is loaded, from where, and whether it is sample data."""
+    _require("feature_price_check")
+    from services.price_check import get_index
     return get_index().coverage()
 
 

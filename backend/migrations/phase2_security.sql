@@ -61,7 +61,7 @@ CREATE TRIGGER update_verifications_modtime
 ALTER TABLE verifications ENABLE ROW LEVEL SECURITY;
 ALTER TABLE safety_check_log ENABLE ROW LEVEL SECURITY;
 ALTER TABLE caregiver_links ENABLE ROW LEVEL SECURITY;
-ALTER TABLE adverse_reports ENABLE ROW LEVEL SECURITY;
+ALTER TABLE reports ENABLE ROW LEVEL SECURITY;  -- was `adverse_reports`, a table no migration creates
 
 -- Allow service role to bypass RLS (for backend admin operations)
 ALTER TABLE verifications FORCE ROW LEVEL SECURITY;
@@ -106,7 +106,7 @@ CREATE POLICY caregiver_links_isolation ON caregiver_links
     FOR ALL
     USING (
         caregiver_id = current_setting('request.header.x-user-id', true)
-        OR patient_id = current_setting('request.header.x-user-id', true)
+        OR creator_user_id = current_setting('request.header.x-user-id', true)
         OR current_setting('request.header.x-user-role', true) IN ('admin', 'clinic_admin')
     );
 
@@ -115,7 +115,7 @@ CREATE POLICY verifications_clinic_isolation ON verifications
     FOR ALL
     USING (
         clinic_id IS NULL
-        OR clinic_id = current_setting('request.header.x-clinic-id', true)
+        OR clinic_id::text = current_setting('request.header.x-clinic-id', true)
         OR current_setting('request.header.x-user-role', true) = 'admin'
     );
 

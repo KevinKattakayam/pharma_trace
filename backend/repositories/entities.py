@@ -34,7 +34,7 @@ class AuditRepository(BaseRepository):
 
 class ReportRepository(BaseRepository):
     """Repository managing anonymous zero-knowledge adverse event reports."""
-    table_name = "adverse_reports"
+    table_name = "reports"  # was "adverse_reports": no migration ever created that table
 
 
 class CaregiverRepository(BaseRepository):

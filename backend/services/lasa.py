@@ -55,6 +55,12 @@ def _clean(name: str) -> str:
     return re.sub(r"[^a-z ]", "", re.sub(r"\s+", " ", name)).strip()
 
 
+def plausible_name(name: str) -> bool:
+    """Registry rows sometimes hold whole product descriptions ("... 375mg eq. Sulbactam 147.0 mg ... tablets").
+    Those are not names a person reads off a pack, and they distort similarity matching."""
+    return len(name) <= 60 and "(" not in name and sum(ch.isdigit() for ch in name) <= 3
+
+
 def phonetic_key(name: str) -> str:
     s = _clean(name).replace(" ", "")
     for pattern, repl in _PHONETIC_RULES:
@@ -83,7 +89,7 @@ def corpus() -> tuple[Entry, ...]:
         try:
             with sqlite3.connect(REGISTRY_DB) as conn:
                 entries += [Entry(b, g, "cdsco_brand_mapping") for b, g in conn.execute("SELECT brand_name, generic_name FROM brand_mappings") if b and g]
-                entries += [Entry(g, g, "cdsco_approved_molecule") for (g,) in conn.execute("SELECT generic_name FROM indian_drugs") if g]
+                entries += [Entry(g, g, "cdsco_approved_molecule") for (g,) in conn.execute("SELECT generic_name FROM indian_drugs") if g and plausible_name(g)]
         except sqlite3.Error as exc:
             logger.warning("lasa_registry_unavailable", error=str(exc))
     if CURATED_FILE.exists():

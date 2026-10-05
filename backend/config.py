@@ -111,6 +111,8 @@ class Settings(BaseSettings):
     feature_lasa_guard: bool = True
     feature_passive_alias_learning: bool = False  # off: unauthenticated traffic could poison aliases
     batch_alerts_data_path: str = ""  # optional JSON file of normalised regulator alerts
+    ceiling_prices_data_path: str = ""  # optional JSON file of NPPA ceiling prices
+    feature_price_check: bool = True
 
     # ── Web Push ──────────────────────────────────────────────────────────
     vapid_private_key: str = ""

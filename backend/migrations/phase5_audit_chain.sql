@@ -1,6 +1,5 @@
 -- Phase 5: make the audit chain real (audit findings R1, R6).
--- Idempotent. Requires pgcrypto (available on Supabase).
-CREATE EXTENSION IF NOT EXISTS pgcrypto;
+-- Idempotent. Needs PostgreSQL 11+ (built-in sha256()); no extensions required.
 
 CREATE TABLE IF NOT EXISTS audit_chain (
     id              BIGSERIAL PRIMARY KEY,
@@ -57,14 +56,14 @@ BEGIN
     PERFORM pg_advisory_xact_lock(hashtext('pharmatrace.audit_chain'));
     SELECT record_hash INTO v_prev FROM audit_chain ORDER BY id DESC LIMIT 1;
     IF v_prev IS NULL THEN
-        v_prev := encode(digest('PHARMATRACE_GENESIS', 'sha256'), 'hex');
+        v_prev := encode(sha256(convert_to('PHARMATRACE_GENESIS', 'UTF8')), 'hex');
     END IF;
     INSERT INTO audit_chain (verification_id, event_type, previous_hash, record_hash, canonical)
     VALUES (
         p_verification_id,
         p_event_type,
         v_prev,
-        encode(digest(v_prev || p_canonical, 'sha256'), 'hex'),
+        encode(sha256(convert_to(v_prev || p_canonical, 'UTF8')), 'hex'),
         p_canonical
     )
     RETURNING * INTO v_row;

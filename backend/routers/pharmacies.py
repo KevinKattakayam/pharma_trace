@@ -26,6 +26,11 @@ def _haversine_km(lat1, lng1, lat2, lng2):
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
+MIN_REVIEWS_FOR_SCORE = 3
+PRIOR_MEAN = 3.0
+PRIOR_WEIGHT = 5
+
+
 async def _compute_trust_score(pharmacy_id: str) -> dict:
     """Compute anti-gaming trust score from real review and verification data in Supabase with TTL caching and parallel batching."""
     import asyncio
@@ -108,42 +113,29 @@ async def _compute_trust_score(pharmacy_id: str) -> dict:
             tasks.spawn(db.insert_many("flagged_reviews", flagged_reviews_to_insert), name="flagged_reviews_insert")
         except Exception: pass
         
-    local_verifications = await db.query("safety_check_log", filters={"pharmacy_id": pharmacy_id}, limit=100)
-    pass_rate_score = 0
-    if local_verifications:
-        passed = sum(1 for v in local_verifications if v.get("verdict") == "authentic")
-        pass_rate_score = (passed / len(local_verifications)) * 50
-        
-    review_score = min(math.log10(max(len(valid_reviews), 1)) * 15, 30)
-    
-    recency_boost = 0
-    last_activity = None
-    if valid_reviews:
-        r_str = valid_reviews[-1].get("created_at")
-        if r_str: last_activity = datetime.fromisoformat(r_str.replace("Z", "+00:00"))
-    if local_verifications:
-        v_str = local_verifications[0].get("created_at")
-        if v_str:
-            v_dt = datetime.fromisoformat(v_str.replace("Z", "+00:00"))
-            if not last_activity or v_dt > last_activity:
-                last_activity = v_dt
-                
-    if last_activity:
-        days_since = (now - last_activity).days
-        if days_since <= 14:
-            recency_boost = 20 * (1 - (days_since / 14))
-            
-    trust_score = pass_rate_score + review_score + recency_boost
-    
+    # Community rating, NOT a safety or authenticity verdict. Bayesian average of the star ratings of
+    # non-flagged reviews: with few reviews it stays near the neutral prior, so one 5-star review cannot
+    # make a listing look excellent. Below MIN_REVIEWS_FOR_SCORE no score is shown at all.
+    # (Previously the score used review COUNT and ignored the ratings, so many 1-star reviews raised it,
+    # and a "pass rate" term read a table that has no pharmacy_id column.)
+    ratings = [float(r["rating"]) for r in valid_reviews if isinstance(r.get("rating"), (int, float))]
+    n = len(ratings)
+    average = sum(ratings) / n if n else None
+    trust_score = None
+    if n >= MIN_REVIEWS_FOR_SCORE:
+        bayes = (sum(ratings) + PRIOR_MEAN * PRIOR_WEIGHT) / (n + PRIOR_WEIGHT)
+        trust_score = round((bayes - 1) / 4 * 100, 1)  # 1..5 stars -> 0..100
+
     res = {
-        "trust_score": round(trust_score, 1),
+        "trust_score": trust_score,
+        "average_rating": round(average, 2) if average is not None else None,
+        "review_count": n,
+        "rating_status": "rated" if trust_score is not None else ("not_rated" if n == 0 else "not_enough_reviews"),
         "trust_breakdown": {
-            "pass_rate_score": round(pass_rate_score, 1),
-            "review_volume_score": round(review_score, 1),
-            "recency_boost": round(recency_boost, 1),
+            "method": f"bayesian_average(prior={PRIOR_MEAN}, weight={PRIOR_WEIGHT}), minimum {MIN_REVIEWS_FOR_SCORE} reviews",
             "valid_reviews": len(valid_reviews),
-            "flagged_reviews": len(reviews) - len(valid_reviews)
-        }
+            "flagged_reviews": len(reviews) - len(valid_reviews),
+        },
     }
     await cache.set(cache_key, res, ttl_seconds=900)
     return res
@@ -168,12 +160,16 @@ async def get_nearby_pharmacies(lat: float = 19.076, lng: float = 72.877, radius
     trust_scores = await asyncio.gather(*[_compute_trust_score(p["id"]) for p in nearby_raw], return_exceptions=True)
 
     for p, trust in zip(nearby_raw, trust_scores):
+        # The PostGIS RPC returns lat_out/lng_out; the local store returns lat/lng. Normalise both.
+        p = {**p, "lat": p.get("lat", p.get("lat_out")), "lng": p.get("lng", p.get("lng_out"))}
         dist = p.get("distance_m")
         if dist is None:
-            dist_km = _haversine_km(lat, lng, p.get("lat", 0), p.get("lng", 0))
+            dist_km = _haversine_km(lat, lng, p.get("lat") or 0, p.get("lng") or 0)
             dist = round(dist_km * 1000)
             
-        t_data = trust if isinstance(trust, dict) else {"trust_score": 100.0, "trust_breakdown": None}
+        # Never show a default score as if it were a rating (it used to fall back to 100/100).
+        t_data = trust if isinstance(trust, dict) else {"trust_score": None, "rating_status": "unavailable", "trust_breakdown": None}
+        p = {**p, "listing_status": p.get("listing_status") or "community_unverified"}
         nearby.append({
             **p,
             "distance_m": dist,

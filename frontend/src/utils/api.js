@@ -451,5 +451,9 @@ ApiClient.prototype.lasaCheck = function lasaCheck(name, genericName) {
   return this.request('/safety/lasa-check', { method: 'POST', body: JSON.stringify({ name, generic_name: genericName || null }) });
 };
 
+ApiClient.prototype.priceCheck = function priceCheck(body) {
+  return this.request('/safety/price-check', { method: 'POST', body: JSON.stringify(body) });
+};
+
 export const api = new ApiClient();
 export default api;

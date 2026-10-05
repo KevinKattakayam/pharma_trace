@@ -74,6 +74,7 @@ class GeoPoint(StrictRequestModel):
 
 class PrintedLabel(StrictRequestModel):
     """What the user reads off the printed pack, for QR-vs-label consistency checks."""
+    mrp: Optional[float] = Field(default=None, ge=0, le=1_000_000)
     batch_no: Optional[str] = Field(default=None, max_length=40)
     expiry_date: Optional[str] = Field(default=None, max_length=20)
     mfg_date: Optional[str] = Field(default=None, max_length=20)
@@ -88,6 +89,8 @@ class BarcodeVerifyRequest(StrictRequestModel):
     # Client-claimed time (offline scans). Stored as client_reported_at; never the audit time.
     verified_at: Optional[str] = Field(default=None, max_length=40)
     printed: Optional[PrintedLabel] = None
+    # Units in the pack (tablets/ml). Only used for the India ceiling-price comparison.
+    units_in_pack: Optional[int] = Field(default=None, ge=1, le=10_000)
 
 
 class ImageVerifyRequest(StrictRequestModel):
@@ -139,6 +142,15 @@ class BatchAuditRequest(StrictRequestModel):
 class PackCheckRequest(StrictRequestModel):
     qr_payload: Optional[str] = Field(default=None, max_length=2048)
     printed: Optional[PrintedLabel] = None
+    units_in_pack: Optional[int] = Field(default=None, ge=1, le=10_000)
+
+
+class PriceCheckRequest(StrictRequestModel):
+    drug_name: str = Field(..., min_length=2, max_length=200)
+    printed_mrp: Optional[float] = Field(default=None, ge=0, le=1_000_000)
+    units_in_pack: Optional[int] = Field(default=None, ge=1, le=10_000)
+    dosage_form: Optional[str] = Field(default=None, max_length=40)
+    strength: Optional[str] = Field(default=None, max_length=40)
 
 
 class LasaCheckRequest(StrictRequestModel):
@@ -245,6 +257,7 @@ class VerificationResponse(BaseModel):
     pack_check: Optional[dict] = None
     batch_alerts: Optional[dict] = None
     lasa: Optional[dict] = None
+    price_check: Optional[dict] = None
     name_match_approximate: bool = False
     safety_notice: str = (
         "A registry or barcode match shows a record exists; it does not prove this pack is genuine. "

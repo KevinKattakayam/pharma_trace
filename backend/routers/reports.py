@@ -13,12 +13,7 @@ router = APIRouter(prefix="/reports", tags=["reports"])
 @router.post("", response_model=ReportResponse)
 async def submit_report(payload: ReportRequest, request: Request):
     """Submit a suspicious drug report (anonymous option available)."""
-    # Extract IP for HMAC daily rotation, prioritizing CDN headers
-    client_ip = request.headers.get("CF-Connecting-IP") or request.headers.get("X-Forwarded-For") or request.client.host
-    
-    # Explicitly drop all identifying headers to prevent downstream leakage
-    safe_headers = {k: v for k, v in request.headers.items() if k.lower() not in ['x-forwarded-for', 'cf-connecting-ip', 'x-real-ip']}
-    
+    # No client IP is read or passed on: reporter tokens are random (see services/anonymous.py).
     report = await create_report(
         drug_name=payload.drug_name,
         description=payload.description,
@@ -27,7 +22,6 @@ async def submit_report(payload: ReportRequest, request: Request):
         barcode=payload.barcode,
         anonymous=payload.anonymous,
         photo_urls=payload.photo_urls,
-        client_ip=client_ip
     )
     return ReportResponse(
         report_id=report["id"],

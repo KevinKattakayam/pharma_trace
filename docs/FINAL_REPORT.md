@@ -44,7 +44,7 @@ Server-side handling is ~2.5 ms per request; the rest is queueing on one core. T
 |---|---|
 | Lighthouse score | **Not measured**: no browser available in the sandbox. Run `npx lighthouse http://localhost:8080 --view` after `docker compose up`. |
 | Container build, Trivy scan, gitleaks | **Not run**: no container runtime. Configured in `.github/workflows/ci.yml` and will run on first push. |
-| `phase5_audit_chain.sql` against PostgreSQL | **Not executed**: the PostgreSQL install hung twice. Reviewed by hand; the local-store path of the same logic is tested (40 concurrent appends, tamper detection). **Run it on a staging DB before go-live.** |
+| `phase5_audit_chain.sql` against PostgreSQL | **Now tested** on a real PostgreSQL 16 (see Update below). PostGIS-dependent SQL (location trigger, `nearby_*` RPCs) remains untested offline: verify on Supabase. |
 | Load test of registry-backed verification | Not possible offline; see §2. |
 
 ## 4. What was built
@@ -97,3 +97,33 @@ cd frontend && npm ci && npm test && npx eslint src --quiet && npm run build && 
 # Everything in containers
 cp backend/.env.example backend/.env && docker compose up --build                  # http://localhost:8080
 ```
+
+
+## 9. Update: free data sources, price check, copy and UI
+
+Measured after this update: **188 backend tests**, **19 frontend tests**, coverage 45 % overall / **92 %** safety-critical, Ruff 0 strict (legacy 185), Bandit 0, pip-audit 0, ESLint 0 errors, `npm audit` (production) 0.
+
+* **New free-data feature**: NPPA ceiling-price check (`/safety/price-check`, Pack Check integration, `/price-check` page). 21 tests cover the arithmetic (ceiling × units × GST), the 2 % tolerance, refusal to match a different strength or form, "needs confirmation" instead of accusation on near matches, and that an overcharge never changes the authenticity verdict.
+* **`docs/DATA_SOURCES.md`** lists every free source and key, with licence rules (ODbL attribution, Overpass/Nominatim rate limits, NPPA prices being per-unit and ex-GST) and a suggested order of work.
+* **Copy and UI**: plain-language copy centralised in `utils/copy.js` and enforced by a test that fails on jargon; typography scale and spacing tokens; shared `PageHeader`/`ScopeNotice`; form fields with visible labels, 16px inputs, 44px targets, focus rings, reduced-motion support.
+* **Not verified**: real NPPA/CDSCO documents (sample data only), and no browser has rendered the new pages.
+
+## 8. Update: replacing dummy things with real ones
+
+Measured after this update (same environment): **167 backend tests** (was 122), **12 frontend tests** (was 5), coverage 43 % overall / **92 %** on safety-critical modules, Ruff 0 on strict modules (legacy 185, ratchet lowered from 187), Bandit 0 medium+, pip-audit 0, `npm audit` (production) 0, ESLint 0 errors.
+
+**Real PostgreSQL testing** (`pgserver`, PostgreSQL 16): the audit-chain migration is idempotent, DB-computed hashes equal Python's (including Hindi/Unicode), edits/deletes/truncate/forks are blocked, 8 concurrent connections produce one valid 40-record chain, and the legacy table upgrades. A **schema-contract test** then found ten real defects that the old silent local fallback had been hiding (docs/AUDIT.md §5), including a **stored XSS** in the map, a base migration that fails on a fresh database, five missing tables, missing columns on `verifications`/`pharmacies`, a map that could not find any pharmacy, and a pharmacy "Trust Index" that ignored star ratings and defaulted to 100/100. All fixed and tested.
+
+**Corrections to earlier statements:** the look-alike corpus has **257** usable names, not ~2,300 (about 2,000 bundled "names" were product descriptions); the pharmacy "trust index" never measured trust.
+
+| Dummy item | Now | Still needs |
+|---|---|---|
+| Regulator alerts (3 fake records) | PDF→draft extractor, importer that **rejects unreviewed rows**, API refuses sample data in staging/prod | A person to review each month's rows against CDSCO's PDF |
+| Pharmacies (empty map) | Real OpenStreetMap importer (unverified, ODbL attribution), honest rating, XSS fixed | Running the importer for your area; real "verified" status needs pharmacist claims + regulator approval |
+| Brand names (87) | `import_brands.py` (source required) | A product list you are licensed to use |
+| "Is it ready?" | `scripts/doctor.py` lists what is dummy/unsafe, exit 1 on blockers | Fixing what it reports |
+| Database | Migrations tested; phase 6 aligns schema | Running them on Supabase; verifying the PostGIS trigger there |
+| `authentic`/`counterfeit` | unchanged | A manufacturer serial-verification partner |
+| AI | unchanged | A (free) Groq API key |
+
+**Not verified by me:** PostGIS behaviour (trigger, `nearby_*`), the OSM importer against the live Overpass service (tested with a synthetic response in the Overpass format), the PDF extractor against real CDSCO PDFs (tested with synthetic PDFs in the two layouts seen in public extracts; real months will differ), any browser rendering of the changed pages.

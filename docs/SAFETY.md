@@ -7,4 +7,7 @@
 5. **No clinical decisions.** No dose changes (`automated_dose_recommendations: false`), no diagnosis. AI outputs carry `ai_generated: true` and a safety notice.
 6. **Cited content.** Regulatory findings link to their source (CDSCO FAQ / alert URL). Sample data is labelled `SAMPLE` in data, API (`is_sample_data`) and UI.
 
+7. **Ratings are not safety.** Pharmacy star ratings reflect customer reviews only; unverified listings are labelled as such; "verified" requires regulator approval of a licence claim.
+8. **Real data needs review.** Machine-extracted regulator data cannot be loaded until a named person has reviewed it (enforced by the importer); the API refuses sample data in staging/prod.
+
 **Changes needing clinical safety officer sign-off:** ADR-0004 (clean record match → `unknown` instead of `suspicious`).

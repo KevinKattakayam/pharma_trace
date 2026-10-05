@@ -4,6 +4,8 @@
 
 **Additive request field:** `printed` on `/verify/barcode` (printed batch/expiry for Pack Check).
 
+**Pharmacy listings:** `trust_score` is now a community rating (Bayesian average of stars) or `null`; new fields `average_rating`, `review_count`, `rating_status`, `listing_status`, `source`. Clients must handle `null` (previously a default such as 100 or 50 could appear).
+
 **New endpoints:** `/ready`, `/safety/pack-check`, `/safety/batch-alerts`, `/safety/batch-alerts/coverage`, `/safety/lasa-check`.
 
 **Behaviour changes (security fixes, intentionally breaking for unauthorised callers):**

@@ -217,7 +217,7 @@ async def verify_barcode_core(body: BarcodeVerifyRequest, user: CurrentUser | No
     recall_status, _recalls = merge_recall_status(fda_res, cdsco_res)
 
     # 4. Regulator batch alerts + pack consistency (feature-flagged)
-    batch_alerts = pack = None
+    batch_alerts = pack = price_result = None
     if settings.feature_batch_alerts:
         from services.batch_alerts import get_index
         batch_alerts = get_index().match(batch_no, brand, generic)
@@ -225,7 +225,9 @@ async def verify_barcode_core(body: BarcodeVerifyRequest, user: CurrentUser | No
     if settings.feature_pack_check and (qr["valid"] or gs1_data.get("gtin") or body.printed):
         from services.pack_check import check_pack
         pack = check_pack(qr_payload=barcode if (qr["valid"] or gs1_data) else None,
-                          printed=body.printed.model_dump() if body.printed else None)
+                          printed=body.printed.model_dump() if body.printed else None,
+                          units_in_pack=body.units_in_pack)
+        price_result = pack.get("price_check")
         flags.extend(f for f in pack["integrity_flags"] if f != "batch_alert")
 
     # 5. Label, side effects, cold chain
@@ -309,7 +311,8 @@ async def verify_barcode_core(body: BarcodeVerifyRequest, user: CurrentUser | No
         requires_human_review=serial.get("verified") is not True,
         verification_scope="authoritative_serial" if serial.get("verified") is not None else "record_match_only",
         data_freshness={"external_data_max_age_hours": settings.external_data_max_age_hours, "authoritative_serial_available": serial.get("available", False)},
-        verdict_reasons=reasons, pack_check=pack, batch_alerts=batch_alerts, lasa=lasa, name_match_approximate=approximate,
+        verdict_reasons=reasons, pack_check=pack, batch_alerts=batch_alerts, lasa=lasa, price_check=price_result,
+        name_match_approximate=approximate,
     )
 
 

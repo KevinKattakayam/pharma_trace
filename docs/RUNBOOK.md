@@ -14,3 +14,13 @@
 fix any rejected lines it prints → redeploy or restart. Never point `BATCH_ALERTS_DATA_PATH` at `*.SAMPLE.json` in production.
 
 **Secret rotation:** rotating `JWT_SECRET` signs everyone out; rotating `HMAC_DAILY_SECRET` resets rate-limit buckets. Both are safe at any time.
+
+## Making the data real
+
+**Regulator alerts (monthly).** 1) Download the CDSCO alert PDF. 2) `python -m scripts.cdsco_pdf_to_draft_csv alert.pdf --month YYYY-MM --source-url https://… --out draft.csv`: *draft only*, layouts change monthly. 3) A person checks **every row** against the PDF, sets `category`, fills `reviewed_by`/`reviewed_at`, clears the `CHECK` notes. 4) `python -m scripts.import_regulator_alerts draft.csv --out data/regulator_alerts.json --append` rejects anything unreviewed. 5) Set `BATCH_ALERTS_DATA_PATH`, restart. Revised lists replace earlier ones: re-import the month.
+
+**Pharmacies.** `python -m scripts.import_osm_pharmacies --bbox S,W,N,E --dry-run`, then without `--dry-run`. One district at a time (Overpass is shared). Listings stay `osm_unverified`. Keep the OpenStreetMap attribution visible (ODbL).
+
+**Brand names.** Obtain a product list you are licensed to use; `python -m scripts.import_brands brands.csv` (each row needs a `source`); restart.
+
+**Check progress.** `python -m scripts.doctor` lists what is still dummy.

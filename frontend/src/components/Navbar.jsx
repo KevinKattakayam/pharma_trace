@@ -24,6 +24,7 @@ const Icons = {
 const navItems = [
   { path: '/scan', icon: 'scan', label: 'Scan' },
     { path: '/pack-check', icon: 'scan', label: 'Pack Check' },
+    { path: '/price-check', icon: 'scan', label: 'Price Check' },
   { path: '/cabinet', icon: 'cabinet', label: 'Cabinet' },
   { path: '/map', icon: 'map', label: 'Map' },
   { path: '/batch', icon: 'batch', label: 'Batch' },

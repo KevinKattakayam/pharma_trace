@@ -1,3 +1,5 @@
+import { escapeHtml, hasOsmListings, listingLabel, OSM_ATTRIBUTION, ratingText, ratingTone } from '../utils/pharmacyView';
+import { PAGE } from '../utils/copy';
 import React, { useState, useEffect, useRef } from 'react';
 import PharmacyCard from '../components/PharmacyCard';
 import api from '../utils/api';
@@ -108,7 +110,7 @@ export default function MapView() {
     } else {
       pharmacies.forEach(p => {
         if (p.lat == null || p.lng == null) return;
-        const colorClass = p.trust_score >= 70 ? 'safe' : p.trust_score >= 40 ? 'warn' : 'danger';
+        const colorClass = ratingTone(p);
         const marker = L.divIcon({
           className: 'custom-pharmacy-marker',
           html: `<div class="pharmacy-marker pharmacy-marker--${colorClass}"></div>`,
@@ -116,11 +118,11 @@ export default function MapView() {
         });
         L.marker([p.lat, p.lng], { icon: marker }).addTo(layerGroup).bindPopup(`
           <div class="map-popup">
-            <div class="map-popup__tag map-popup__tag--${colorClass}">Pharmacy Entity</div>
-            <div class="map-popup__title">${p.name}</div>
+            <div class="map-popup__tag map-popup__tag--${colorClass}">${escapeHtml(listingLabel(p))}</div>
+            <div class="map-popup__title">${escapeHtml(p.name)}</div>
             <div class="map-popup__content">
-              Trust Index: <span style="color:var(--${colorClass})">${p.trust_score}/100</span><br/>
-              ${p.address || ''}
+              ${escapeHtml(ratingText(p))}<br/>
+              ${escapeHtml(p.address || '')}
             </div>
           </div>
         `);
@@ -134,18 +136,18 @@ export default function MapView() {
         <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: '1.5rem', flexWrap: 'wrap' }} className="anim">
           <div>
             <div className="hero__tag" style={{ marginBottom: '0.6rem' }}>
-              <span className="hero__tag-dot" /> Live Monitoring Active
+              <span className="hero__tag-dot" /> Updated as people report
             </div>
-            <h1 style={{ fontSize: '2.5rem', fontWeight: 900, letterSpacing: '-0.04em', lineHeight: 1 }}>Geospatial Intel</h1>
+            <h1 className="page-header__title">{PAGE.map.title}</h1>
             <p style={{ color: 'var(--text-3)', fontSize: '0.9375rem', marginTop: '0.5rem', maxWidth: '500px' }}>
-              Real-time visualization of supply chain integrity, registered pharmacies, and reported counterfeit clusters across the subcontinent.
+              {PAGE.map.sub}
             </p>
           </div>
           
           <div style={{ display: 'flex', background: 'var(--bg-tertiary)', padding: '4px', borderRadius: '12px', border: '1px solid var(--border-1)' }}>
             {[
-              { id: 'heatmap', label: 'Threat Clusters' },
-              { id: 'pharmacies', label: 'Verified Network' }
+              { id: 'heatmap', label: 'Reports' },
+              { id: 'pharmacies', label: 'Pharmacies' }
             ].map(t => (
               <button key={t.id} onClick={() => { setActiveTab(t.id); setActiveCluster(null); }}
                 style={{
@@ -184,7 +186,7 @@ export default function MapView() {
                {!loading && activeTab === 'heatmap' && reports.length === 0 && (
                  <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.4)', backdropFilter: 'blur(2px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 900, flexDirection: 'column', gap: '1rem', textAlign: 'center' }}>
                    <div style={{ padding: '2rem', background: 'var(--bg-secondary)', borderRadius: '16px', border: '1px solid var(--border-2)', maxWidth: '400px' }}>
-                     <h3 style={{ fontSize: '1.25rem', fontWeight: 800, color: 'var(--text-1)', marginBottom: '0.5rem' }}>No Threat Clusters Detected</h3>
+                     <h3 style={{ fontSize: '1.25rem', fontWeight: 800, color: 'var(--text-1)', marginBottom: '0.5rem' }}>No reports in this area</h3>
                      <p style={{ fontSize: '0.875rem', color: 'var(--text-3)', lineHeight: 1.5 }}>The reporting database currently has zero suspicious drug submissions in this timeframe.</p>
                    </div>
                  </div>
@@ -224,7 +226,7 @@ export default function MapView() {
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
                           {[
                             { label: 'Active Alerts', val: reports.length, color: 'var(--danger)', trend: 'Monitoring' },
-                            { label: 'Network Entities', val: pharmacies.length, color: 'var(--accent)', trend: 'Active' }
+                            { label: 'Pharmacies listed', val: pharmacies.length, color: 'var(--accent)', trend: 'Unverified unless stated' }
                           ].map((s, i) => (
                             <div key={i}>
                               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: '0.4rem' }}>
@@ -248,6 +250,8 @@ export default function MapView() {
          </div>
 
          {activeTab === 'pharmacies' && pharmacies.length > 0 && (
+         <>
+           {hasOsmListings(pharmacies) && <p style={{ fontSize: '0.75rem', color: 'var(--text-3)', margin: '0 0 0.75rem' }}>{OSM_ATTRIBUTION}</p>}
            <div className="anim anim-up" style={{ padding: '0.5rem 0' }}>
              <div style={{ display: 'flex', gap: '1rem', overflowX: 'auto', paddingBottom: '1rem' }} className="no-scrollbar">
                {pharmacies.map((p, i) => (
@@ -257,6 +261,7 @@ export default function MapView() {
                ))}
              </div>
            </div>
+         </>
          )}
       </div>
     </div>

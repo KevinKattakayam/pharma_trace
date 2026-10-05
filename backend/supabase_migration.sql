@@ -151,8 +151,10 @@ CREATE INDEX idx_audit_created ON audit_chain(created_at DESC);
 -- ── Caregiver Links ──
 CREATE TABLE IF NOT EXISTS caregiver_links (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    invite_code TEXT UNIQUE NOT NULL,
-    caregiver_id UUID,
+    invite_code TEXT UNIQUE,            -- legacy name; the API uses `code`
+    code TEXT UNIQUE,
+    creator_user_id TEXT,
+    caregiver_id TEXT,                  -- app user IDs are opaque strings, not necessarily UUIDs
     recipient_name TEXT,
     status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'active', 'revoked')),
     created_at TIMESTAMPTZ DEFAULT NOW()
@@ -413,10 +415,13 @@ CREATE TABLE IF NOT EXISTS clinics (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Note: In a live DB, run these ALTER TABLE commands manually.
--- ALTER TABLE verifications ADD COLUMN clinic_id UUID REFERENCES clinics(id);
--- ALTER TABLE scan_history ADD COLUMN clinic_id UUID REFERENCES clinics(id);
--- ALTER TABLE cabinet_medicines ADD COLUMN clinic_id UUID REFERENCES clinics(id);
+-- Tenant/owner columns the API writes. These were a commented-out manual step, which made the
+-- index below fail on a fresh database and left verifications without an owner column.
+ALTER TABLE verifications ADD COLUMN IF NOT EXISTS clinic_id UUID REFERENCES clinics(id);
+ALTER TABLE verifications ADD COLUMN IF NOT EXISTS user_id TEXT;
+ALTER TABLE scan_history ADD COLUMN IF NOT EXISTS clinic_id UUID REFERENCES clinics(id);
+ALTER TABLE medicine_cabinet ADD COLUMN IF NOT EXISTS clinic_id UUID REFERENCES clinics(id);
+CREATE INDEX IF NOT EXISTS idx_verifications_user ON verifications(user_id, created_at DESC);
 
 CREATE INDEX idx_verifications_clinic_date ON verifications(clinic_id, created_at);
 

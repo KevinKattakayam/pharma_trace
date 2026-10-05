@@ -1,5 +1,8 @@
 import React, { useState } from 'react';
 import api from '../utils/api';
+import PageHeader from '../components/PageHeader';
+import ScopeNotice from '../components/ScopeNotice';
+import { PAGE, friendlyError } from '../utils/copy';
 
 const STATUS = {
   consistent: { title: 'Label is consistent', tone: 'var(--primary)', text: 'The code and the printed label agree and the dates make sense. This does not prove the medicine is genuine.' },
@@ -32,7 +35,7 @@ export default function PackCheck() {
       const p = Object.fromEntries(Object.entries(printed).filter(([, v]) => v.trim()));
       setResult(await api.packCheck(qr.trim() || null, Object.keys(p).length ? p : null));
     } catch (err) {
-      setError(err.message);
+      setError(friendlyError(err));
       setResult(null);
     } finally {
       setLoading(false);
@@ -42,11 +45,8 @@ export default function PackCheck() {
   const s = result && (STATUS[result.status] || STATUS.insufficient_data);
   return (
     <div className="page">
-      <h1 style={{ fontSize: '1.6rem', fontWeight: 800, marginBottom: '0.4rem' }}>Check a pack’s label</h1>
-      <p style={{ maxWidth: '62ch', color: 'var(--text-muted)', marginBottom: '1.25rem' }}>
-        Copied QR codes are often stuck on fake packs. Compare what the code says with what is printed
-        on the strip or box: batch number, expiry and manufacturing date.
-      </p>
+      <PageHeader title={PAGE.packCheck.title} sub={PAGE.packCheck.sub} />
+      <ScopeNotice compact />
 
       <form className="card" onSubmit={submit} style={{ maxWidth: 560, display: 'grid', gap: '0.9rem' }}>
         <label style={{ display: 'grid', gap: '0.3rem', fontWeight: 600, fontSize: '0.875rem' }}>

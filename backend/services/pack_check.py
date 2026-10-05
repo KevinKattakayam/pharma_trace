@@ -24,6 +24,7 @@ from typing import Any
 
 from rapidfuzz import fuzz
 
+from config import get_settings
 from services import gs1, india_qr
 from services.batch_alerts import get_index, normalise_batch
 
@@ -78,11 +79,13 @@ def _names_agree(a: str | None, b: str | None) -> bool | None:
 def check_pack(
     *,
     qr_payload: str | None = None,
-    printed: dict[str, str | None] | None = None,
+    printed: dict[str, Any] | None = None,
     today: date | None = None,
+    units_in_pack: int | None = None,
 ) -> dict[str, Any]:
     today = today or date.today()
-    printed = {k: (v.strip() if isinstance(v, str) and v.strip() else None) for k, v in (printed or {}).items()}
+    printed = {k: ((v.strip() if isinstance(v, str) else v) or None) for k, v in (printed or {}).items()}
+    printed_mrp = printed.pop("mrp", None)
     findings: list[dict[str, Any]] = []
     flags: list[str] = []
 
@@ -165,6 +168,21 @@ def check_pack(
             "A regulator alert lists the same (or a similar-looking) batch number for a different or unconfirmed product. Re-check the printed batch and product name.",
             "batch_no"))
 
+    # 4. Price (India, scheduled formulations only). Never affects the verdict: overcharging is a
+    # pricing offence, not evidence that a medicine is falsified.
+    price = None
+    mrp = printed_mrp if printed_mrp is not None else qr.get("mrp")
+    if get_settings().feature_price_check and (mrp is not None or units_in_pack):
+        from services.price_check import check_price
+        try:
+            price = check_price(drug_name=merged["generic_name"] or merged["brand_name"] or "",
+                                printed_mrp=float(mrp) if mrp not in (None, "") else None,
+                                units_in_pack=units_in_pack)
+        except (TypeError, ValueError):
+            price = None
+        if price and price["status"] == "above_ceiling":
+            findings.append(_finding("mrp_above_ceiling", "warn", price["message"], "mrp", price["source_url"]))
+
     flags = list(dict.fromkeys(flags))
     critical = any(f["severity"] == "critical" for f in findings)
     has_data = bool(qr_payload) or any(printed.values())
@@ -175,6 +193,7 @@ def check_pack(
         "findings": findings,
         "qr_fields": {k: qr.get(k) for k in (*india_qr.PARTICULARS, "mrp")} if qr else None,
         "batch_alerts": batch_result,
+        "price_check": price,
         "requires_human_review": True,
         "disclaimer": "Consistency is not authenticity. A genuine code can be copied onto a falsified pack. "
                       "If anything looks wrong, do not use the medicine and ask a pharmacist; you can report it to CDSCO.",

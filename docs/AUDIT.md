@@ -106,3 +106,22 @@ Every finding marked **[confirmed]** was reproduced by executing code; the rest 
 ## 4. Fix plan
 
 Critical and High items are fixed in Phase 1; Medium items are fixed in Phases 1–2 where they touch safety, auth or data integrity. Items deferred are listed explicitly in `docs/FINAL_REPORT.md` with reasons.
+
+---
+
+## 5. Addendum: found while replacing dummy data with real data
+
+These were discovered by running the migrations against a real PostgreSQL 16 and by recording every table/column the application touches (`tests/test_zz_schema_contract.py`). Most were hidden before because failed database writes silently fell back to a local file.
+
+| # | Sev | Finding | Status |
+|---|---|---|---|
+| A1 | Critical | **Stored XSS** in the map popup: pharmacy name/address (user- or OpenStreetMap-supplied) were inserted into an HTML string unescaped (`MapView.jsx`). | Fixed (`escapeHtml`, tested) |
+| A2 | High | The base migration **fails on a fresh database**: an index on `verifications.clinic_id` whose `ALTER TABLE` was commented out. | Fixed |
+| A3 | High | `verifications` had no `user_id`/`clinic_id` columns, so scan history/tenant scoping could never persist. `pharmacies` had no `lat`/`lng`/claim columns; `nearby_pharmacies` reads a `location` column nothing populated, so the **map found nothing** on a real database. | Fixed (phase 6 + trigger) |
+| A4 | High | Tables used by code but never created: `adverse_reports`, `ai_cache`, `caregiver_recipients`, `caregiver_medications`, `caregiver_alerts`. `caregiver_links` used `code`/`creator_user_id` while the schema had `invite_code`. | Fixed (phase 6) |
+| A5 | High | `phase2_security.sql` failed: type mismatches (`uuid = text`), a policy on a non-existent `patient_id` column, RLS on a non-existent table. | Fixed |
+| A6 | High | Anonymous report endpoint **returned "submitted" when saving failed**. | Fixed (now 503), tested |
+| A7 | High | Pharmacy "Trust Index" **ignored star ratings** (scored review count), had a dead "pass rate" term (read a table with no `pharmacy_id`), and defaulted to **100/100** when uncomputable. | Replaced by a Bayesian community rating, shown only with 3+ reviews |
+| A8 | Medium | Map tab labelled "Verified Network" while listings are unverified. | Fixed |
+| A9 | Medium | Look-alike name corpus claimed 2,342 names; ~2,085 were long product descriptions. Effective coverage is **257 names**. | Filtered; docs corrected |
+| A10 | Low | Report endpoint read client-controlled forwarding headers for an IP it no longer used. | Removed |

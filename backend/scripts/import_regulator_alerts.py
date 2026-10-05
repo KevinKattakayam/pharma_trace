@@ -5,7 +5,11 @@ safety feature. Workflow (docs/RUNBOOK.md): extract the table to CSV, have a sec
 it against the PDF, then import. Invalid rows are rejected and listed; nothing is silently dropped.
 
 Columns: batch_number, product_name, category (nsq|spurious|misbranded|adulterated|recall),
-alert_month (YYYY-MM), manufacturer, reason, reporting_lab, source_url
+alert_month (YYYY-MM), manufacturer, reason, reporting_lab, source_url,
+reviewed_by, reviewed_at (YYYY-MM-DD)
+
+`reviewed_by` and `reviewed_at` are REQUIRED: a row nobody has checked against the regulator's PDF is rejected,
+so unreviewed machine-extracted drafts (scripts/cdsco_pdf_to_draft_csv.py) cannot be loaded by accident.
 Usage: python -m scripts.import_regulator_alerts alerts.csv --out data/regulator_alerts.json [--append]
 """
 from __future__ import annotations
@@ -13,12 +17,26 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import re
 import sys
 from dataclasses import asdict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from services.batch_alerts import RegulatorAlert  # noqa: E402
+
+
+def review_problem(row: dict) -> str | None:
+    """Return why a row may not be imported, or None. Enforces the two-person rule in code."""
+    if not (row.get("reviewed_by") or "").strip():
+        return "not reviewed: reviewed_by is empty"
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", (row.get("reviewed_at") or "").strip()):
+        return "not reviewed: reviewed_at must be YYYY-MM-DD"
+    if not (row.get("source_url") or "").strip().lower().startswith("https://"):
+        return "source_url must be the https:// link of the regulator publication"
+    if (row.get("review_notes") or "").strip().upper().startswith("CHECK"):
+        return "unresolved reviewer note (starts with CHECK); fix it and clear the note"
+    return None
 
 
 def main() -> int:
@@ -32,6 +50,9 @@ def main() -> int:
     with a.csv.open(newline="", encoding="utf-8-sig") as fh:
         for line, row in enumerate(csv.DictReader(fh), start=2):
             try:
+                problem = review_problem(row)
+                if problem:
+                    raise ValueError(problem)
                 keep.append(asdict(RegulatorAlert.from_dict({**row, "dataset": "regulator"})))
             except (ValueError, TypeError) as exc:
                 rejected.append((line, str(exc)))

@@ -92,6 +92,14 @@ async def lifespan(_app: FastAPI):
     if settings.feature_batch_alerts:
         from services.batch_alerts import load_index
         idx = load_index()
+        from services.batch_alerts import assert_no_sample_data
+        assert_no_sample_data(idx, strict=settings.is_strict)
+    if settings.feature_price_check:
+        from services.price_check import load_index as load_prices
+        prices = load_prices()
+        if settings.is_strict and prices.coverage()["is_sample_data"]:
+            raise RuntimeError("Refusing to start: SAMPLE ceiling-price data is loaded in staging/prod.")
+        logger.info("ceiling_prices_loaded", **{k: v for k, v in prices.coverage().items() if k in ("status", "records", "is_sample_data")})
         logger.info("batch_alerts_loaded", **{k: v for k, v in idx.coverage().items() if k in ("status", "records", "is_sample_data")})
     logger.info("startup", environment=settings.environment, version=settings.app_version)
     yield
@@ -289,6 +297,7 @@ async def capabilities() -> dict[str, Any]:
         },
         "data": {"max_external_data_age_hours": settings.external_data_max_age_hours, "cdsco_registry": True, "regulatory_alerts": True},
         "features": {
+            "price_check": settings.feature_price_check,
             "pack_check": settings.feature_pack_check,
             "batch_alerts": settings.feature_batch_alerts,
             "lasa_guard": settings.feature_lasa_guard,

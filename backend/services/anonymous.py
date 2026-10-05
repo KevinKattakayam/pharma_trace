@@ -77,11 +77,9 @@ async def create_report(
         "created_at": datetime.now(timezone.utc).isoformat()
     }
 
-    try:
-        created = await repo.create(report)
-        return created
-    except Exception:
-        return report
+    # Let persistence errors propagate (HTTP 503). Previously a failed save returned the unsaved report,
+    # telling the reporter "submitted" when nothing had been stored.
+    return await repo.create(report)
 
 
 async def get_all_reports() -> List[Dict[str, Any]]:

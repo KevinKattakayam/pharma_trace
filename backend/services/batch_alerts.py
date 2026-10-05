@@ -175,6 +175,18 @@ class AlertIndex:
         }
 
 
+class SampleDataInProductionError(RuntimeError):
+    """Synthetic alert data must never be served as if it were regulator data."""
+
+
+def assert_no_sample_data(index: AlertIndex, *, strict: bool) -> None:
+    if strict and index.coverage()["is_sample_data"]:
+        raise SampleDataInProductionError(
+            "Refusing to start: SAMPLE regulator alert data is loaded in staging/prod. "
+            "Point BATCH_ALERTS_DATA_PATH at reviewed real data or leave it empty."
+        )
+
+
 _index: AlertIndex | None = None
 
 

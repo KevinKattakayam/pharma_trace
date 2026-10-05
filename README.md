@@ -18,8 +18,10 @@ quality alerts, and spot label inconsistencies that copied codes leave behind.
 | Barcode / QR verification | Parses GTIN/EAN/UPC, NDC, GS1 (bracketed, raw, Digital Link) and GSR 823(E) QR; looks up openFDA and a bundled CDSCO dataset; checks openFDA and CDSCO recalls | Bundled CDSCO data = 2,255 approved molecules + 87 brand mappings, not a full brand/licence register |
 | **Pack Check** | Compares what the code encodes with the printed batch/expiry/mfg date; date logic; regulator alerts | Consistency only; a fully copied label passes |
 | **Batch-level regulator alerts** | Matches batch **and** product against loaded CDSCO NSQ/spurious alerts | Needs alert data imported via a reviewed CSV; ships with **sample data only** |
-| **Look-alike/sound-alike warnings** | Flags names close to registered names with different ingredients | Reach limited by the name corpus |
+| **Look-alike/sound-alike warnings** | Flags names close to registered names with different ingredients | Bundled corpus is ~257 usable names; load a licensed brand list (`scripts/import_brands.py`) for real coverage |
 | Verdicts with reasons | `unknown` (record match only), `suspicious` (+ reason codes), `authentic`/`counterfeit` (serial check only) | `requires_human_review` is true unless serial-verified |
+| **Pharmacy map** | Real OpenStreetMap locations (via `scripts/import_osm_pharmacies.py`) shown as *unverified*; community star rating only with 3+ reviews; "verified" only after a regulator approves a pharmacist's licence claim | A listing says a place exists, not that its stock is genuine |
+| **Price check (India)** | Compares the printed MRP with NPPA's notified ceiling price for scheduled (essential) medicines | Needs reviewed NPPA data; unlisted medicines return "no limit set", not "fine" |
 | Interactions, side effects, generics, cabinet, caregiver, clinic dashboards, PvPI ADR prefill, adverse events (FAERS), cold-chain context, offline PWA | See API docs | AI output is labelled and requires review |
 | Tamper-evident audit trail | SHA-256 hash chain; DB-side serialised append; append-only triggers | Tamper-*evident*, not immutable (see ADR-0003) |
 
@@ -52,7 +54,7 @@ Exact figures and what was *not* measured: [docs/FINAL_REPORT.md](docs/FINAL_REP
 
 ## Documentation
 
-[Audit](docs/AUDIT.md) · [Final report](docs/FINAL_REPORT.md) · [Feature proposals](docs/FEATURE_PROPOSALS.md) ·
+[Data sources & free keys](docs/DATA_SOURCES.md) · [Audit](docs/AUDIT.md) · [Final report](docs/FINAL_REPORT.md) · [Feature proposals](docs/FEATURE_PROPOSALS.md) ·
 [Safety](docs/SAFETY.md) · [Architecture](docs/ARCHITECTURE.md) · [Deployment](docs/DEPLOYMENT.md) ·
 [Runbook](docs/RUNBOOK.md) · [Privacy & compliance](docs/PRIVACY.md) · [API changes](docs/API_CHANGES.md) ·
 [ADRs](docs/adr/) · [Security policy](SECURITY.md) · [Contributing](CONTRIBUTING.md) · [Changelog](CHANGELOG.md)

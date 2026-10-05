@@ -100,3 +100,48 @@ def offline_externals(monkeypatch):
         if callable(fn) and hasattr(v, name):
             monkeypatch.setattr(v, name, fn)
     return state
+
+
+# ── Schema-contract recorder ─────────────────────────────────────────────────
+# Every table/column the application touches while the whole suite runs is recorded, and
+# tests/test_zz_schema_contract.py checks them against a real, fully migrated PostgreSQL.
+SCHEMA_TOUCH: dict[str, dict[str, set[str]]] = {}
+
+
+def _touch(table: str, kind: str, cols) -> None:
+    entry = SCHEMA_TOUCH.setdefault(table, {"write": set(), "filter": set(), "select": set()})
+    entry[kind].update(c for c in cols if isinstance(c, str))
+
+
+def _install_recorder() -> None:
+    from services.supabase import SupabaseClient
+
+    def wrap(name: str, record):
+        original = getattr(SupabaseClient, name)
+
+        async def recorded(self, *args, **kwargs):
+            record(args, kwargs)
+            return await original(self, *args, **kwargs)
+        setattr(SupabaseClient, name, recorded)
+
+    def arg(args, kwargs, i, key, default=None):
+        return args[i] if len(args) > i else kwargs.get(key, default)
+
+    wrap("insert", lambda a, k: _touch(arg(a, k, 0, "table"), "write", (arg(a, k, 1, "data") or {}).keys()))
+    wrap("insert_many", lambda a, k: [_touch(arg(a, k, 0, "table"), "write", r.keys()) for r in (arg(a, k, 1, "rows") or [])])
+    wrap("update", lambda a, k: (_touch(arg(a, k, 0, "table"), "write", (arg(a, k, 1, "data") or {}).keys()),
+                                 _touch(arg(a, k, 0, "table"), "filter", (arg(a, k, 2, "filters") or {}).keys())))
+    wrap("delete", lambda a, k: _touch(arg(a, k, 0, "table"), "filter", (arg(a, k, 1, "filters") or {}).keys()))
+
+    def rec_query(a, k):
+        table = arg(a, k, 0, "table")
+        _touch(table, "filter", (k.get("filters") or {}).keys())
+        if k.get("order_by"):
+            _touch(table, "select", [k["order_by"]])
+        sel = k.get("select", "*")
+        if isinstance(sel, str) and sel != "*":
+            _touch(table, "select", [c.strip() for c in sel.split(",") if c.strip().isidentifier()])
+    wrap("query", rec_query)
+
+
+_install_recorder()

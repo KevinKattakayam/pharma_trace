@@ -23,9 +23,9 @@ def test_eval_smoke_cases_pass_and_are_labelled_synthetic():
 
 def test_importer_rejects_bad_rows_and_reports_them(tmp_path):
     src = tmp_path / "a.csv"
-    src.write_text("batch_number,product_name,category,alert_month,manufacturer,reason,reporting_lab,source_url\n"
-                   "B1,Paracetamol,nsq,2026-08,M,assay,CDL,https://cdsco.gov.in/x\n"
-                   "B2,Ibuprofen,unknown,2026-08,M,x,CDL,u\n")
+    src.write_text("batch_number,product_name,category,alert_month,manufacturer,reason,reporting_lab,source_url,reviewed_by,reviewed_at\n"
+                   "B1,Paracetamol,nsq,2026-08,M,assay,CDL,https://cdsco.gov.in/x,Asha,2026-09-01\n"
+                   "B2,Ibuprofen,unknown,2026-08,M,x,CDL,https://cdsco.gov.in/y,Asha,2026-09-01\n")
     out = tmp_path / "out.json"
     p = subprocess.run([sys.executable, "-m", "scripts.import_regulator_alerts", str(src), "--out", str(out)],
                        cwd=BACKEND, capture_output=True, text=True, timeout=60)

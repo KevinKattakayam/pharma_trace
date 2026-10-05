@@ -45,7 +45,7 @@ def test_ready_and_security_headers(client):
 
 
 def test_capabilities_lists_features(client):
-    assert client.get(f"{V}/capabilities").json()["features"] == {"pack_check": True, "batch_alerts": True, "lasa_guard": True}
+    assert client.get(f"{V}/capabilities").json()["features"] == {"price_check": True, "pack_check": True, "batch_alerts": True, "lasa_guard": True}
 
 
 def test_per_client_rate_limit_buckets(client, no_rate_limits):

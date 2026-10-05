@@ -136,7 +136,7 @@ export default function ClinicDashboard() {
       <div className="container" style={{ maxWidth: 900, margin: '0 auto' }}>
         <div style={{ textAlign: 'center', marginBottom: '2rem' }} className="anim">
           <div className="hero__tag" style={{ justifyContent: 'center', marginBottom: '.75rem' }}>
-            <span className="hero__tag-dot" /> Enterprise Administration
+            <span className="hero__tag-dot" /> Clinic account
           </div>
           <h1 style={{ fontSize: '2.25rem', fontWeight: 900, letterSpacing: '-0.04em', marginBottom: '.5rem' }}>
             Clinic Dashboard
