@@ -65,7 +65,7 @@ jobs:
       - uses: actions/checkout@v4
       - run: docker build -t pharmatrace-api:ci backend && docker build -t pharmatrace-web:ci frontend
       - name: Container scan (Trivy)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.35.0
         with: { image-ref: pharmatrace-api:ci, severity: "CRITICAL,HIGH", exit-code: "1", ignore-unfixed: true }
       - name: Smoke test
         run: |
