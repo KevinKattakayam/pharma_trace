@@ -9,6 +9,8 @@ RUN pip wheel --wheel-dir /wheels -r requirements.txt
 # ── runtime stage: no compilers, non-root, read-only friendly ──
 FROM python:3.12-slim AS runtime
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 PORT=8000 WEB_CONCURRENCY=2
+# Pick up OS security fixes published since the base image was built (Trivy flagged libpcre2-8-0).
+RUN apt-get update && apt-get -y upgrade && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=build /wheels /wheels
 RUN pip install --no-index --find-links=/wheels /wheels/* && rm -rf /wheels \
