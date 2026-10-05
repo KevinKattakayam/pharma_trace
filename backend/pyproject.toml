@@ -1,0 +1,31 @@
+[project]
+name = "pharmatrace-api"
+version = "2.0.0"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q -p no:cacheprovider"
+filterwarnings = ["ignore::DeprecationWarning", "ignore:.*ephemeral.*:RuntimeWarning"]
+
+[tool.coverage.run]
+source = ["."]
+omit = ["tests/*", "scripts/*", "eval/*", "venv/*"]
+
+[tool.coverage.report]
+skip_empty = true
+show_missing = false
+
+[tool.ruff]
+line-length = 140
+target-version = "py311"
+extend-exclude = ["venv", "data"]
+
+[tool.ruff.lint]
+# F: pyflakes, E/W: pycodestyle errors, B: bugbear, S: bandit security, BLE: blind except, ASYNC, I: isort
+select = ["F", "E4", "E7", "E9", "W6", "B", "S", "BLE", "ASYNC", "I"]
+ignore = ["S101", "B008"]  # assert in tests; FastAPI Depends() in defaults is idiomatic
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S", "BLE", "B"]
+"scripts/*" = ["S", "BLE"]

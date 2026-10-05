@@ -1,4 +1,4 @@
-import { storeEncryptedTokenInIndexedDB } from './cryptoStorage';
+import { getToken, setToken as persistToken } from './session';
 const configuredBase = import.meta.env.VITE_API_BASE_URL || '/api/v1';
 const API_BASE = configuredBase.replace(/\/$/, '');
 const DEFAULT_TIMEOUT_MS = 20_000;
@@ -6,11 +6,10 @@ const DEFAULT_TIMEOUT_MS = 20_000;
 class ApiClient {
   constructor() {
     this.base = API_BASE;
-    this.token = localStorage.getItem('pharmatrace_token');
   }
 
   async request(endpoint, options = {}) {
-    const token = localStorage.getItem('pharmatrace_token');
+    const token = await getToken();
     const headers = { ...options.headers };
     if (!(options.body instanceof FormData) && !headers['Content-Type']) {
       headers['Content-Type'] = 'application/json';
@@ -311,10 +310,6 @@ class ApiClient {
     return this.request(`/ai/explain-interaction?${params}`, { method: 'POST' });
   }
 
-  async identifyPill(description) {
-    return this.request(`/vision/identify?description=${encodeURIComponent(description)}`, { method: 'POST' });
-  }
-
   // ═══════════════════════════════════════════════
   // LangGraph 6-Agent Pipeline
   // ═══════════════════════════════════════════════
@@ -388,14 +383,12 @@ class ApiClient {
   // Enterprise: Clinic Admin
   // ═══════════════════════════════════════════════
 
-  setToken(token) {
-    this.token = token;
-    localStorage.setItem('pharmatrace_token', token);
-    storeEncryptedTokenInIndexedDB(token);
+  async setToken(token) {
+    await persistToken(token);
   }
 
-  async loginClinic(clinicId) {
-    return this.request('/clinic/login', { method: 'POST', body: JSON.stringify({ clinic_id: clinicId }) });
+  async loginClinic(email, password) {
+    return this.request('/clinic/login', { method: 'POST', body: JSON.stringify({ email, password }) });
   }
 
   async createClinic(data) {
@@ -421,7 +414,8 @@ class ApiClient {
     if (clinicId) params.set('clinic_id', clinicId);
 
     const headers = {};
-    if (this.token) headers['Authorization'] = `Bearer ${this.token}`;
+    const token = await getToken();
+    if (token) headers['Authorization'] = `Bearer ${token}`;
 
     const response = await fetch(`${this.base}/audit/export?${params}`, { headers });
     if (!response.ok) {
@@ -443,6 +437,19 @@ class ApiClient {
     return this.request(`/pvpi/report-status/${verificationId}`);
   }
 }
+
+// ── Safety intelligence (v2) ──
+ApiClient.prototype.packCheck = function packCheck(qrPayload, printed) {
+  return this.request('/safety/pack-check', { method: 'POST', body: JSON.stringify({ qr_payload: qrPayload || null, printed: printed || null }) });
+};
+ApiClient.prototype.batchAlerts = function batchAlerts(batch, product) {
+  const q = new URLSearchParams({ batch });
+  if (product) q.set('product', product);
+  return this.request(`/safety/batch-alerts?${q}`);
+};
+ApiClient.prototype.lasaCheck = function lasaCheck(name, genericName) {
+  return this.request('/safety/lasa-check', { method: 'POST', body: JSON.stringify({ name, generic_name: genericName || null }) });
+};
 
 export const api = new ApiClient();
 export default api;

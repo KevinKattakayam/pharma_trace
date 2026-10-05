@@ -4,10 +4,14 @@ In production: backed by Supabase PostGIS.
 In development: in-memory store populated by user submissions.
 No hardcoded sample pharmacies.
 """
-import uuid
 import math
-from fastapi import APIRouter, HTTPException
-from models.schemas import PharmacyReviewRequest
+import uuid
+
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
+
+from dependencies import require_current_user, require_role
+from models.schemas import CurrentUser, PharmacyReviewRequest
+from services import tasks
 from services.supabase import get_supabase
 
 router = APIRouter(prefix="/pharmacies", tags=["pharmacies"])
@@ -24,11 +28,12 @@ def _haversine_km(lat1, lng1, lat2, lng2):
 
 async def _compute_trust_score(pharmacy_id: str) -> dict:
     """Compute anti-gaming trust score from real review and verification data in Supabase with TTL caching and parallel batching."""
-    from services.supabase import get_supabase
-    from services.cache_manager import get_cache
-    import math
-    from datetime import datetime, timezone, timedelta
     import asyncio
+    import math
+    from datetime import datetime, timedelta, timezone
+
+    from services.cache_manager import get_cache
+    from services.supabase import get_supabase
     
     cache = get_cache()
     cache_key = f"trust_score:{pharmacy_id}"
@@ -100,7 +105,7 @@ async def _compute_trust_score(pharmacy_id: str) -> dict:
             
     if flagged_reviews_to_insert:
         try:
-            asyncio.create_task(db.insert_many("flagged_reviews", flagged_reviews_to_insert))
+            tasks.spawn(db.insert_many("flagged_reviews", flagged_reviews_to_insert), name="flagged_reviews_insert")
         except Exception: pass
         
     local_verifications = await db.query("safety_check_log", filters={"pharmacy_id": pharmacy_id}, limit=100)
@@ -180,9 +185,11 @@ async def get_nearby_pharmacies(lat: float = 19.076, lng: float = 72.877, radius
 
 
 @router.post("/register")
-async def register_pharmacy(name: str, address: str, lat: float, lng: float,
-                              city: str = "", country: str = ""):
-    """Register a new pharmacy (for community building the database)."""
+async def register_pharmacy(name: str = Query(..., min_length=2, max_length=160), address: str = Query(..., max_length=300),
+                              lat: float = Query(..., ge=-90, le=90), lng: float = Query(..., ge=-180, le=180),
+                              city: str = Query("", max_length=80), country: str = Query("", max_length=80),
+                              user: CurrentUser = Depends(require_current_user)):
+    """Add a community listing. It is shown as UNVERIFIED until a regulator approves a claim."""
     db = get_supabase()
     pharmacy = {
         "id": str(uuid.uuid4()),
@@ -198,7 +205,9 @@ async def register_pharmacy(name: str, address: str, lat: float, lng: float,
         "suspicious_reports": 0,
         "is_claimed": False,
         "verified_inventory": [],
-        "contact_number": None
+        "contact_number": None,
+        "listing_status": "community_unverified",
+        "created_by": user.user_id,
     }
     
     await db.insert("pharmacies", pharmacy)
@@ -219,7 +228,9 @@ async def get_trust_score(pharmacy_id: str):
     return {**pharmacy, **trust}
 
 @router.post("/{pharmacy_id}/claim")
-async def claim_pharmacy(pharmacy_id: str, contact_number: str, license_number: str = ""):
+async def claim_pharmacy(pharmacy_id: str, contact_number: str = Query(..., min_length=6, max_length=20),
+                         license_number: str = Query(..., min_length=3, max_length=60),
+                         user: CurrentUser = Depends(require_role("pharmacist"))):
     """
     Request to claim a pharmacy listing.
     Creates a pending claim that must be verified by a clinic admin before going live.
@@ -241,7 +252,8 @@ async def claim_pharmacy(pharmacy_id: str, contact_number: str, license_number: 
         "claim_status": "pending",
         "contact_number": contact_number,
         "license_number": license_number,
-        "is_claimed": False
+        "is_claimed": False,
+        "claimed_by": user.user_id,
     }
 
     await db.update("pharmacies", updates, filters={"id": pharmacy_id})
@@ -254,11 +266,8 @@ async def claim_pharmacy(pharmacy_id: str, contact_number: str, license_number: 
 
 
 @router.post("/{pharmacy_id}/verify-claim")
-async def verify_claim(pharmacy_id: str):
-    """
-    Admin-only: Approve a pending pharmacy claim.
-    In production this must be gated behind Depends(get_current_user) with admin role check.
-    """
+async def verify_claim(pharmacy_id: str, reviewer: CurrentUser = Depends(require_role("regulator"))):
+    """Approve a pending claim (regulator/admin only; audit S1). The claimant cannot self-approve."""
     db = get_supabase()
     pharmacy_res = await db.query("pharmacies", filters={"id": pharmacy_id}, limit=1)
     
@@ -268,10 +277,14 @@ async def verify_claim(pharmacy_id: str):
     pharmacy = pharmacy_res[0]
     if pharmacy.get("claim_status") != "pending":
         raise HTTPException(status_code=400, detail="No pending claim to verify")
+    if pharmacy.get("claimed_by") == reviewer.user_id:
+        raise HTTPException(status_code=403, detail="A claimant cannot approve their own claim")
 
     updates = {
         "claim_status": "verified",
-        "is_claimed": True
+        "is_claimed": True,
+        "listing_status": "claim_verified",
+        "claim_verified_by": reviewer.user_id,
     }
     
     await db.update("pharmacies", updates, filters={"id": pharmacy_id})
@@ -281,7 +294,8 @@ async def verify_claim(pharmacy_id: str):
 
 
 @router.put("/{pharmacy_id}/inventory")
-async def update_inventory(pharmacy_id: str, inventory: list[dict]):
+async def update_inventory(pharmacy_id: str, inventory: list[dict] = Body(..., max_length=2000),
+                           user: CurrentUser = Depends(require_role("pharmacist"))):
     """Publish verified medicine inventory to the directory."""
     db = get_supabase()
     pharmacy_res = await db.query("pharmacies", filters={"id": pharmacy_id}, limit=1)
@@ -292,6 +306,8 @@ async def update_inventory(pharmacy_id: str, inventory: list[dict]):
     pharmacy = pharmacy_res[0]
     if pharmacy.get("claim_status") != "verified":
         raise HTTPException(status_code=403, detail="Pharmacy must be claimed and verified before updating inventory")
+    if pharmacy.get("claimed_by") != user.user_id and user.role != "admin":
+        raise HTTPException(status_code=403, detail="Only the verified claimant can publish this inventory")
         
     await db.update("pharmacies", {"verified_inventory": inventory}, filters={"id": pharmacy_id})
     
@@ -299,7 +315,7 @@ async def update_inventory(pharmacy_id: str, inventory: list[dict]):
 
 
 @router.post("/{pharmacy_id}/review")
-async def submit_review(pharmacy_id: str, request: PharmacyReviewRequest):
+async def submit_review(pharmacy_id: str, request: PharmacyReviewRequest, user: CurrentUser = Depends(require_current_user)):
     """Submit a pharmacy review with anti-gaming detection."""
     db = get_supabase()
     pharmacy_res = await db.query("pharmacies", filters={"id": pharmacy_id}, limit=1)
@@ -307,6 +323,10 @@ async def submit_review(pharmacy_id: str, request: PharmacyReviewRequest):
     if not pharmacy_res:
         raise HTTPException(status_code=404, detail="Pharmacy not found")
 
+    if await db.query("pharmacy_reviews", filters={"pharmacy_id": pharmacy_id, "reviewer_id": user.user_id}, limit=1):
+        raise HTTPException(status_code=409, detail="You have already reviewed this pharmacy")
+    if pharmacy_res[0].get("claimed_by") == user.user_id:
+        raise HTTPException(status_code=403, detail="Owners cannot review their own pharmacy")
     review_id = str(uuid.uuid4())
 
     # Anti-gaming: flag if rating is extreme (1 or 5) with no comment
@@ -323,6 +343,7 @@ async def submit_review(pharmacy_id: str, request: PharmacyReviewRequest):
         "comment": request.comment,
         "flagged": flagged,
         "flag_reason": flag_reason,
+        "reviewer_id": user.user_id,
     }
     
     await db.insert("pharmacy_reviews", review)

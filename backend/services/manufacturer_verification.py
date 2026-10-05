@@ -5,6 +5,7 @@ manufacturer or authorised distributor service. Without that contract, the
 application must report a record match only—not physical authenticity.
 """
 from typing import Optional
+
 import httpx
 
 from config import get_settings

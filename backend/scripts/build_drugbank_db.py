@@ -4,11 +4,10 @@ Parses the free DrugBank Community Edition XML dataset into a localized SQLite c
 Extracts drug names, generic names, interactions, and side effects.
 Requires the 'full database.xml' downloaded from go.drugbank.com.
 """
-import os
-import sqlite3
-import xml.etree.ElementTree as ET
-from pathlib import Path
 import logging
+import sqlite3
+import defusedxml.ElementTree as ET  # hardened against XXE/entity expansion
+from pathlib import Path
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("build_drugbank")

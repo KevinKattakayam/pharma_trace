@@ -3,10 +3,9 @@ Side effect explainer — rewrites drug label warnings in plain language
 at a 6th-grade reading level with severity labeling.
 """
 import re
-from typing import Optional
+
 from models.schemas import SideEffect
 from services.groq_ai import ai_rewrite_side_effects
-
 
 # Common side effects database with plain-language descriptions
 COMMON_SIDE_EFFECTS = {

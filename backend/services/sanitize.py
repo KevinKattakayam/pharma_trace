@@ -1,5 +1,6 @@
 """Input Sanitization Service against Prompt Injection and Malicious Payloads."""
 import re
+
 from fastapi import HTTPException
 
 # Whitelist: alphanumeric, standard hyphens, spaces, dots, parentheses, slashes (max 100 chars)

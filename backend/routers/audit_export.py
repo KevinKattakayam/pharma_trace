@@ -5,11 +5,13 @@ A drug inspector requests this during a clinic audit.
 """
 import csv
 import io
-import hashlib
 from datetime import datetime, timezone
-from fastapi import APIRouter, HTTPException, Query, Depends
+
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
-from dependencies import get_current_user
+
+from dependencies import ensure_clinic_access, require_role
+from models.schemas import CurrentUser
 
 router = APIRouter(prefix="/audit", tags=["audit"])
 
@@ -20,7 +22,7 @@ async def export_audit_chain(
     end_date: str = Query(None, description="ISO date (YYYY-MM-DD)"),
     clinic_id: str = Query(None, description="Filter by clinic ID"),
     redacted: bool = Query(True, description="Redact patient PII"),
-    user: dict = Depends(get_current_user),
+    user: CurrentUser = Depends(require_role("auditor", "regulator", "clinic_admin")),
 ):
     """
     Export the SHA-256 audit chain for regulatory compliance.
@@ -28,10 +30,12 @@ async def export_audit_chain(
     verification status, and chain integrity verification.
     Streams directly to the client without persisting to ephemeral storage.
     """
-    if user.get("clinic_id") != clinic_id:
-        raise HTTPException(status_code=403, detail="Not authorized to export data for this clinic")
+    if user.role == "clinic_admin":
+        if not clinic_id:
+            clinic_id = user.clinic_id
+        ensure_clinic_access(user, clinic_id or "")
 
-    from services.audit import _audit_chain, verify_chain, GENESIS_HASH, compute_hash
+    from services.audit import compute_hash, list_records, verify_chain  # noqa: F401
 
     # Parse date filters
     dt_start = None
@@ -48,26 +52,30 @@ async def export_audit_chain(
             raise HTTPException(status_code=400, detail=f"Invalid end_date: {end_date}")
 
     filtered = []
-    for record in _audit_chain:
+    for rec in await list_records(limit=100_000):
+        record = {
+            "id": rec.get("id"),
+            "verification_id": rec.get("verification_id"),
+            "record_hash": rec.get("record_hash"),
+            "previous_hash": rec.get("previous_hash"),
+            "canonical": rec.get("_canonical"),
+            "created_at": rec.get("recorded_at", ""),
+            "verified_at": rec.get("client_reported_at", ""),
+            "record_data": rec,
+        }
         try:
-            rec_dt = datetime.fromisoformat(record["created_at"].replace("Z", "+00:00"))
-        except (ValueError, KeyError):
+            rec_dt = datetime.fromisoformat(str(record["created_at"]).replace("Z", "+00:00"))
+        except ValueError:
             rec_dt = None
-
         if dt_start and rec_dt and rec_dt < dt_start:
             continue
         if dt_end and rec_dt and rec_dt > dt_end:
             continue
-
-        if clinic_id:
-            rec_data = record.get("record_data", {})
-            if rec_data.get("clinic_id") and rec_data["clinic_id"] != clinic_id:
-                continue
-
+        if clinic_id and rec.get("clinic_id") != clinic_id:
+            continue
         filtered.append(record)
 
-    # Verify chain integrity for the export synchronously
-    chain_status = verify_chain()
+    chain_status = await verify_chain()
 
     if format == "csv":
         buffer, filename, media_type = _generate_csv(filtered, chain_status, redacted)
@@ -81,8 +89,11 @@ async def export_audit_chain(
         headers={"Content-Disposition": f"attachment; filename={filename}"}
     )
 def _redact_value(val):
-    if not val: return val
-    return "REDACTED-" + hashlib.md5(str(val).encode()).hexdigest()[:6]
+    """Keyed pseudonym (an unkeyed MD5 of a low-entropy value is reversible by dictionary)."""
+    if not val:
+        return val
+    from services.security import pseudonymise
+    return "REDACTED-" + pseudonymise(str(val), purpose="audit-export")[:10]
 
 def _generate_csv(records: list[dict], chain_status: dict, redacted: bool) -> tuple:
     """Generate a CSV export of the audit chain."""
@@ -109,7 +120,7 @@ def _generate_csv(records: list[dict], chain_status: dict, redacted: bool) -> tu
 
     from services.audit import compute_hash as _compute_hash
     for i, record in enumerate(records):
-        expected = _compute_hash(record["previous_hash"], record["record_data"])
+        expected = _compute_hash(record["previous_hash"], record["canonical"] or "")
         hash_valid = expected == record["record_hash"]
 
         rec_data = record.get("record_data", {})
@@ -142,9 +153,9 @@ def _generate_pdf(records: list[dict], chain_status: dict, redacted: bool) -> tu
     try:
         from reportlab.lib import colors
         from reportlab.lib.pagesizes import A4, landscape
-        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
         from reportlab.lib.units import mm
-        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, HRFlowable
+        from reportlab.platypus import HRFlowable, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
     except ImportError:
         return _generate_csv(records, chain_status, redacted)
 
@@ -177,7 +188,7 @@ def _generate_pdf(records: list[dict], chain_status: dict, redacted: bool) -> tu
     header = ["#", "Verification ID", "Hash (first 16)", "Prev Hash (first 16)", "Method", "Verdict", "Confidence", "Verified At", "Valid"]
     data = [header]
     for i, record in enumerate(records):
-        expected = _compute_hash(record["previous_hash"], record["record_data"])
+        expected = _compute_hash(record["previous_hash"], record["canonical"] or "")
         hash_valid = expected == record["record_hash"]
         rec_data = record.get("record_data", {})
 

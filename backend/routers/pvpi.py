@@ -3,9 +3,10 @@ PvPI (Pharmacovigilance Programme of India) Adverse Event Reporting Router.
 Pre-fills a structured adverse event report from a verified drug result.
 The form data can POST directly to the PvPI portal — no backend storage of patient data needed.
 """
+from typing import Optional
+
 from fastapi import APIRouter
 from pydantic import BaseModel
-from typing import Optional
 
 router = APIRouter(prefix="/pvpi", tags=["pvpi"])
 

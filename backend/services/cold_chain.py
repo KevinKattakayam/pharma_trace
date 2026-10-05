@@ -2,9 +2,9 @@
 Cold chain analysis using Open-Meteo free weather API.
 Checks if temperature and humidity at a location could compromise drug integrity.
 """
-import httpx
-from typing import Optional
 import re
+
+import httpx
 
 OPEN_METEO_BASE = "https://api.open-meteo.com/v1/forecast"
 

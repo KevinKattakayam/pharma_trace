@@ -1,8 +1,8 @@
-from datetime import datetime
-from typing import Optional
 import base64
-from pydantic import BaseModel, ConfigDict, Field, field_validator
 from enum import Enum
+from typing import Optional
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class StrictRequestModel(BaseModel):
@@ -47,33 +47,60 @@ class RiskLevel(str, Enum):
 
 # ── Request schemas ──
 
+_SOURCE_PATTERN = r"^[a-z_]{1,32}$"
+
+
+def _validate_b64_image(value: str) -> str:
+    """Reject malformed or excessive image payloads before any AI/API call."""
+    payload = value.split(",", 1)[-1] if value.startswith("data:") else value
+    try:
+        decoded = base64.b64decode(payload, validate=True)
+    except (ValueError, base64.binascii.Error) as exc:
+        raise ValueError("image must be valid base64 data") from exc
+    from config import get_settings
+    if len(decoded) > get_settings().max_image_upload_bytes:
+        raise ValueError("image exceeds the configured upload limit")
+    return value
+
+
+class GeoPoint(StrictRequestModel):
+    """Validated coordinates (previously an unvalidated dict interpolated into WKT; audit S13)."""
+    lat: float = Field(..., ge=-90, le=90)
+    lng: float = Field(..., ge=-180, le=180)
+
+    def wkt(self) -> str:
+        return f"POINT({self.lng:.6f} {self.lat:.6f})"
+
+
+class PrintedLabel(StrictRequestModel):
+    """What the user reads off the printed pack, for QR-vs-label consistency checks."""
+    batch_no: Optional[str] = Field(default=None, max_length=40)
+    expiry_date: Optional[str] = Field(default=None, max_length=20)
+    mfg_date: Optional[str] = Field(default=None, max_length=20)
+    brand_name: Optional[str] = Field(default=None, max_length=120)
+    generic_name: Optional[str] = Field(default=None, max_length=200)
+
+
 class BarcodeVerifyRequest(StrictRequestModel):
     barcode: str = Field(..., min_length=1, max_length=512)
-    location: Optional[dict] = None
-    source: Optional[str] = "live"
-    verified_at: Optional[str] = None
+    location: Optional[GeoPoint] = None
+    source: Optional[str] = Field(default="live", pattern=_SOURCE_PATTERN)
+    # Client-claimed time (offline scans). Stored as client_reported_at; never the audit time.
+    verified_at: Optional[str] = Field(default=None, max_length=40)
+    printed: Optional[PrintedLabel] = None
 
 
 class ImageVerifyRequest(StrictRequestModel):
     image: str = Field(..., min_length=16)  # base64 encoded
-    extracted_text: Optional[str] = None
-    location: Optional[dict] = None
-    source: Optional[str] = "live"
-    verified_at: Optional[str] = None
+    extracted_text: Optional[str] = Field(default=None, max_length=4000)
+    location: Optional[GeoPoint] = None
+    source: Optional[str] = Field(default="live", pattern=_SOURCE_PATTERN)
+    verified_at: Optional[str] = Field(default=None, max_length=40)
 
     @field_validator("image")
     @classmethod
     def validate_image_payload(cls, value: str) -> str:
-        """Reject malformed or excessive image payloads before any AI/API call."""
-        payload = value.split(",", 1)[-1] if value.startswith("data:") else value
-        try:
-            decoded = base64.b64decode(payload, validate=True)
-        except (ValueError, base64.binascii.Error) as exc:
-            raise ValueError("image must be valid base64 data") from exc
-        from config import get_settings
-        if len(decoded) > get_settings().max_image_upload_bytes:
-            raise ValueError("image exceeds the configured upload limit")
-        return value
+        return _validate_b64_image(value)
 
 
 class InteractionCheckRequest(StrictRequestModel):
@@ -81,12 +108,42 @@ class InteractionCheckRequest(StrictRequestModel):
 
 
 class InteractionsPhotoRequest(StrictRequestModel):
-    image: str  # base64 encoded photo of multiple medicines
+    image: str = Field(..., min_length=16)  # base64 encoded photo of multiple medicines
+
+    @field_validator("image")
+    @classmethod
+    def validate_image_payload(cls, value: str) -> str:
+        return _validate_b64_image(value)
 
 
 class SymptomSafetyRequest(StrictRequestModel):
-    symptoms: str
-    current_medications: list[str]
+    symptoms: str = Field(..., min_length=2, max_length=1000)
+    current_medications: list[str] = Field(default_factory=list, max_length=30)
+
+
+class OfflineSyncRequest(StrictRequestModel):
+    """A scan performed offline. The client's verdict is recorded as a *claim*, never trusted."""
+    verification_id: Optional[str] = Field(default=None, max_length=64)
+    brand_name: Optional[str] = Field(default=None, max_length=200)
+    barcode: Optional[str] = Field(default=None, max_length=512)
+    verdict: Optional[str] = Field(default=None, max_length=32)
+    confidence: Optional[float] = Field(default=None, ge=0, le=100)
+    verified_at: Optional[str] = Field(default=None, max_length=40)
+    source: Optional[str] = Field(default="offline_cache", pattern=_SOURCE_PATTERN)
+
+
+class BatchAuditRequest(StrictRequestModel):
+    items: list[dict] = Field(..., min_length=1, max_length=500)
+
+
+class PackCheckRequest(StrictRequestModel):
+    qr_payload: Optional[str] = Field(default=None, max_length=2048)
+    printed: Optional[PrintedLabel] = None
+
+
+class LasaCheckRequest(StrictRequestModel):
+    name: str = Field(..., min_length=2, max_length=120)
+    generic_name: Optional[str] = Field(default=None, max_length=200)
 
 
 class DosageRequest(StrictRequestModel):
@@ -181,6 +238,18 @@ class VerificationResponse(BaseModel):
     requires_human_review: bool = True
     verification_scope: str = "record_match_only"
     data_freshness: Optional[dict] = None
+    # v2 additive fields (non-breaking). See docs/API_CHANGES.md.
+    recall_status: str = "inconclusive"  # active | none_found | inconclusive
+    verdict_reasons: list[str] = []
+    audit_status: str = "recorded"  # recorded | failed
+    pack_check: Optional[dict] = None
+    batch_alerts: Optional[dict] = None
+    lasa: Optional[dict] = None
+    name_match_approximate: bool = False
+    safety_notice: str = (
+        "A registry or barcode match shows a record exists; it does not prove this pack is genuine. "
+        "If in doubt, do not use the medicine and consult a pharmacist."
+    )
 
 
 class DrugInteraction(BaseModel):

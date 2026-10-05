@@ -11,12 +11,14 @@ Every AI resolution is cached to the database. The second time anyone
 asks about the same drug, it comes from PostgreSQL at zero cost.
 """
 import json
-import time
-import httpx
 from typing import Optional
+
+import httpx
+
 from config import get_settings
 from services.supabase import get_supabase
 from services.translation import contains_non_latin, resolve_script_to_latin
+
 
 async def _cache_get(key: str) -> Optional[dict]:
     from services.cache_manager import get_cache
@@ -49,8 +51,7 @@ async def _db_exact_match(query_lower: str) -> Optional[dict]:
             row = results[0]
             # Bump usage count in background (fire-and-forget)
             try:
-                import asyncio
-                asyncio.create_task(_bump_usage(query_lower))
+                __import__('services.tasks', fromlist=['spawn']).spawn(_bump_usage(query_lower), name='alias_usage_bump')
             except Exception:
                 pass
             return {

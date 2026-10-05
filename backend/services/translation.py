@@ -2,10 +2,11 @@
 Translation service using LibreTranslate (free, self-hosted or public instances).
 Rewrites drug information in the user's local language.
 """
-import httpx
 import os
 import unicodedata
 from typing import Optional
+
+import httpx
 
 # Self-hosted LibreTranslate instance (Docker)
 LIBRETRANSLATE_URLS = [

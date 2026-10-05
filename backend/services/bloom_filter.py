@@ -3,11 +3,11 @@ Enterprise Probabilistic Bloom Filter for Zero-Latency Drug & Schedule Lookup.
 Provides O(1) memory checks (<0.01ms) to instantly determine if a drug is NOT restricted (Schedule H/H1/X)
 or if a drug name exists in the CDSCO registry, eliminating 95% of database queries.
 """
-import hashlib
 import asyncio
-import structlog
+import hashlib
 from pathlib import Path
-from typing import Optional, Set
+
+import structlog
 
 logger = structlog.get_logger()
 
@@ -21,8 +21,8 @@ class BloomFilter:
 
     def _get_hashes(self, item: str) -> list[int]:
         item_lower = item.lower().strip()
-        h1 = int(hashlib.md5(item_lower.encode('utf-8')).hexdigest(), 16)
-        h2 = int(hashlib.sha1(item_lower.encode('utf-8')).hexdigest(), 16)
+        h1 = int(hashlib.md5(item_lower.encode('utf-8'), usedforsecurity=False).hexdigest(), 16)
+        h2 = int(hashlib.sha1(item_lower.encode('utf-8'), usedforsecurity=False).hexdigest(), 16)
         return [(h1 + i * h2) % self.size for i in range(self.num_hashes)]
 
     def add(self, item: str):

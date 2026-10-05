@@ -1,6 +1,8 @@
+import json
+
 from groq import AsyncGroq
 from pydantic import BaseModel, field_validator
-import json
+
 from config import get_settings
 
 client = AsyncGroq(api_key=get_settings().groq_api_key)

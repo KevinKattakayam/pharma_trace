@@ -1,534 +1,449 @@
-"""
-PharmaTrace — Pharmaceutical Verification & Safety Platform
-FastAPI Backend Application
+"""PharmaTrace API: medicine verification and safety platform (FastAPI).
 
-Tools integrated:
-- OpenFDA API (drug database, labels, recalls, adverse events)
-- Open-Meteo API (cold chain weather analysis)
-- LibreTranslate (free translation to 20+ languages)
-- WHO GTIN / GS1 (international barcode validation)
-- GPT-4o Vision (pill image analysis — optional, needs API key)
-- Supabase (PostgreSQL + PostGIS — optional, for persistent storage)
-- SHA-256 hash chain (immutable audit log)
-- Web Speech API (voice — frontend)
-- Leaflet.js + CARTO (maps — frontend)
+Important: nothing this API returns proves a medicine is genuine unless an authoritative
+manufacturer/distributor serial check confirms it, and nothing here is a diagnosis or a
+prescription. See docs/SAFETY.md.
 """
-from fastapi import FastAPI, Query
+from __future__ import annotations
+
+import sqlite3
+import time
+import uuid
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Any
+
+import sentry_sdk
+import structlog
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from config import get_settings
+from fastapi.responses import JSONResponse
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+from starlette.datastructures import MutableHeaders
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-# Import routers
-from routers.verify import router as verify_router
-from routers.interactions import router as interactions_router
-from routers.drugs import router as drugs_router
-from routers.reports import router as reports_router
-from routers.pharmacies import router as pharmacies_router
-from routers.caregiver import router as caregiver_router
-from routers.voice import router as voice_router
+from config import get_settings
+from dependencies import require_current_user, require_role
+from models.exceptions import DatabaseConnectionError, DatabaseReadError, DatabaseWriteError
+from models.schemas import CurrentUser
+from routers.audit_export import router as audit_export_router
 from routers.cabinet import router as cabinet_router
+from routers.caregiver import router as caregiver_router
+from routers.clinic import router as clinic_router
+from routers.doctors import router as doctors_router
+from routers.drugs import router as drugs_router
+from routers.interactions import router as interactions_router
+from routers.pharmacies import router as pharmacies_router
 from routers.prescription import router as prescription_router
 from routers.push import router as push_router
-from routers.clinic import router as clinic_router
-from routers.audit_export import router as audit_export_router
 from routers.pvpi import router as pvpi_router
-from routers.doctors import router as doctors_router
+from routers.reports import router as reports_router
 from routers.safety_cases import router as safety_cases_router
+from routers.safety_intel import router as safety_intel_router
+from routers.verify import router as verify_router
+from routers.voice import router as voice_router
+from services import tasks
+from services.limiter import limiter
+from services.security import bearer_token, client_ip, decode_token, pseudonymise, subject_of
 
 settings = get_settings()
+DATA_DIR = Path(__file__).parent / "data"
 
-import structlog
-import sentry_sdk
-
-# Configure structured JSON logging
 structlog.configure(
     processors=[
-        structlog.stdlib.add_log_level,
         structlog.contextvars.merge_contextvars,
+        structlog.stdlib.add_log_level,
         structlog.processors.TimeStamper(fmt="iso"),
-        structlog.processors.JSONRenderer()
+        structlog.processors.format_exc_info,
+        structlog.processors.JSONRenderer(),
     ],
     logger_factory=structlog.PrintLoggerFactory(),
 )
 logger = structlog.get_logger()
 
-# Initialize Sentry error tracking if DSN is provided
+
+def _scrub_event(event: dict[str, Any], _hint: dict[str, Any]) -> dict[str, Any]:
+    """Drop request bodies, cookies and auth headers before anything reaches Sentry (audit S18)."""
+    req = event.get("request") or {}
+    req.pop("data", None)
+    req.pop("cookies", None)
+    headers = req.get("headers") or {}
+    for h in list(headers):
+        if h.lower() in ("authorization", "cookie", "x-cron-secret", "x-forwarded-for", "x-real-ip"):
+            headers[h] = "[redacted]"
+    event.pop("user", None)
+    return event
+
+
 if settings.sentry_dsn:
     sentry_sdk.init(
         dsn=settings.sentry_dsn,
-        traces_sample_rate=1.0,
-        environment="production" if not settings.debug else "development"
+        traces_sample_rate=settings.sentry_traces_sample_rate,
+        environment=settings.environment,
+        send_default_pii=False,
+        before_send=_scrub_event,
     )
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    if settings.feature_batch_alerts:
+        from services.batch_alerts import load_index
+        idx = load_index()
+        logger.info("batch_alerts_loaded", **{k: v for k, v in idx.coverage().items() if k in ("status", "records", "is_sample_data")})
+    logger.info("startup", environment=settings.environment, version=settings.app_version)
+    yield
+    abandoned = await tasks.drain(grace_period=10)
+    from services.supabase import get_supabase
+    await get_supabase().aclose()
+    logger.info("shutdown", abandoned_background_tasks=abandoned)
+
 
 app = FastAPI(
     title=settings.app_name,
     version=settings.app_version,
-    description="""
-    PharmaTrace is an AI-powered pharmaceutical verification and safety platform.
-
-    **Integrated APIs & Services:**
-    - OpenFDA (NDC, Labels, Recalls, FAERS Adverse Events, Generics)
-    - Open-Meteo (Cold chain weather monitoring)
-    - LibreTranslate (Drug info translation to 20+ languages)
-    - WHO GTIN/GS1 (International barcode validation & country detection)
-    - GPT-4o Vision (Pill/packaging image analysis — optional)
-    - Supabase PostgreSQL + PostGIS (Geospatial database — optional)
-
-    **Features:**
-    - Drug verification via barcode/NDC and image analysis
-    - Multi-drug interaction scanning (20+ clinically validated pairs)
-    - Plain-language side effect explainer with severity labeling
-    - Dosage personalization (age, weight, kidney function)
-    - Generic drug finder (same active ingredient)
-    - Pharmacy trust scoring with anti-gaming ML
-    - Outbreak heatmap and timeline visualization
-    - Caregiver dashboard with remote monitoring
-    - Immutable SHA-256 hash-chained audit log
-    - Anonymous zero-knowledge reporting
-    - Batch verification for health workers
-    - Multi-tenant clinic admin dashboards
-    - CDSCO recall feed integration
-    - PvPI adverse event reporting
-    - Regulatory audit chain export (CSV/PDF)
-    - Open API with Python and JavaScript SDKs
-    """,
+    description=(
+        "Medicine verification and safety API for India and global users.\n\n"
+        "**Safety scope.** A barcode, registry, OCR or AI result shows that a *record* exists or that "
+        "a label is internally consistent; it is never proof that a physical pack is genuine. Only an "
+        "authoritative manufacturer/distributor serial check can yield `authentic`/`counterfeit`. "
+        "Clinical content is informational and requires professional review."
+    ),
     docs_url="/api/docs",
-    redoc_url="/api/redoc"
+    redoc_url="/api/redoc",
+    lifespan=lifespan,
 )
 
-# Rate Limiting (SlowAPI)
-from slowapi import _rate_limit_exceeded_handler
-from slowapi.errors import RateLimitExceeded
-from slowapi.middleware import SlowAPIMiddleware
-from services.limiter import limiter
 
+# ─────────────────────────── pure-ASGI middleware ───────────────────────────
+class PrivacyMiddleware:
+    """Derive a keyed, daily-rotating client pseudonym for rate limiting, then remove the IP
+    and forwarding headers so nothing downstream can log or store it (audit S5)."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http":
+            req = Request(scope)
+            scope.setdefault("state", {})["client_key"] = pseudonymise(client_ip(req), purpose="ratelimit")
+            if scope.get("client"):
+                scope["client"] = None  # no IP (real or placeholder) reaches handlers or logs
+            scope["headers"] = [(k, v) for k, v in scope["headers"] if k not in (b"x-forwarded-for", b"x-real-ip", b"forwarded")]
+        await self.app(scope, receive, send)
+
+
+class RequestContextMiddleware:
+    """Request ID + verified user ID in structured logs; adds X-Request-ID to responses."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        req = Request(scope)
+        incoming = req.headers.get("x-request-id", "")
+        req_id = incoming if 8 <= len(incoming) <= 64 and incoming.replace("-", "").isalnum() else str(uuid.uuid4())
+        token = bearer_token(req)
+        claims = decode_token(token) if token else None
+        structlog.contextvars.clear_contextvars()
+        structlog.contextvars.bind_contextvars(request_id=req_id, user_id=(subject_of(claims) if claims else None) or "anonymous", path=scope.get("path"))
+        start = time.perf_counter()
+
+        async def send_wrapper(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                MutableHeaders(scope=message)["X-Request-ID"] = req_id
+                logger.info("request", method=scope.get("method"), status=message["status"], ms=round((time.perf_counter() - start) * 1000, 1))
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
+
+
+SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "no-referrer",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+    "Cross-Origin-Opener-Policy": "same-origin",
+    "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'",
+}
+
+
+class SecurityHeadersMiddleware:
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        is_docs = str(scope.get("path", "")).startswith(("/api/docs", "/api/redoc", "/openapi.json"))
+
+        async def send_wrapper(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                h = MutableHeaders(scope=message)
+                for k, v in SECURITY_HEADERS.items():
+                    if not (is_docs and k == "Content-Security-Policy"):
+                        h.setdefault(k, v)
+                if settings.is_strict:
+                    h.setdefault("Strict-Transport-Security", "max-age=63072000; includeSubDomains")
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
+
+
+# Order: added last = outermost. Effective chain:
+# CORS → SecurityHeaders → Privacy → RequestContext → SlowAPI → routes
 app.state.limiter = limiter
-from models.exceptions import DatabaseConnectionError
-from fastapi.responses import JSONResponse
-from fastapi import Request
-
-@app.exception_handler(DatabaseConnectionError)
-async def db_connection_error_handler(request: Request, exc: DatabaseConnectionError):
-    return JSONResponse(
-        status_code=503,
-        content={"error": "Database service currently unreachable (offline/demo mode active)", "detail": str(exc)}
-    )
-
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)
-
-# CORS
+app.add_middleware(RequestContextMiddleware)
+app.add_middleware(PrivacyMiddleware)
+app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "If-Match", "X-Request-ID"],
     expose_headers=["X-Request-ID"],
 )
 
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.requests import Request
-import uuid
-import jwt
 
-class RequestContextMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        req_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
-        uid = "anonymous"
-        auth = request.headers.get("Authorization")
-        if auth and auth.startswith("Bearer "):
-            try:
-                token = auth.split(" ")[1]
-                payload = jwt.decode(
-                    token,
-                    settings.jwt_secret,
-                    algorithms=[settings.jwt_algorithm],
-                    options={"verify_exp": True, "verify_signature": True},
-                )
-                uid = payload.get("sub") or payload.get("user_id") or "anonymous"
-            except Exception:
-                pass
-        
-        structlog.contextvars.clear_contextvars()
-        structlog.contextvars.bind_contextvars(request_id=req_id, user_id=str(uid))
-        
-        response = await call_next(request)
-        response.headers["X-Request-ID"] = req_id
-        return response
-
-app.add_middleware(RequestContextMiddleware)
-
-class IPStrippingMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        # Override client host to prevent IP logging/storage anywhere downstream
-        if request.scope.get("client"):
-            request.scope["client"] = ("127.0.0.1", request.scope["client"][1])
-        # Also strip typical proxy headers that could leak IP
-        headers = dict(request.scope['headers'])
-        for ip_header in [b'x-forwarded-for', b'x-real-ip']:
-            if ip_header in headers:
-                del headers[ip_header]
-        request.scope['headers'] = [(k, v) for k, v in headers.items()]
-        return await call_next(request)
-
-app.add_middleware(IPStrippingMiddleware)
-
-# Register all routers under /api/v1
-app.include_router(verify_router, prefix="/api/v1")
-app.include_router(interactions_router, prefix="/api/v1")
-app.include_router(drugs_router, prefix="/api/v1")
-app.include_router(reports_router, prefix="/api/v1")
-app.include_router(pharmacies_router, prefix="/api/v1")
-app.include_router(caregiver_router, prefix="/api/v1")
-app.include_router(voice_router, prefix="/api/v1")
-app.include_router(cabinet_router, prefix="/api/v1")
-app.include_router(prescription_router, prefix="/api/v1")
-app.include_router(push_router, prefix="/api/v1")
-app.include_router(clinic_router, prefix="/api/v1")
-app.include_router(audit_export_router, prefix="/api/v1")
-app.include_router(pvpi_router, prefix="/api/v1")
-app.include_router(doctors_router, prefix="/api/v1")
-app.include_router(safety_cases_router, prefix="/api/v1")
+@app.exception_handler(DatabaseConnectionError)
+@app.exception_handler(DatabaseReadError)
+@app.exception_handler(DatabaseWriteError)
+async def db_error_handler(_request: Request, exc: Exception) -> JSONResponse:
+    logger.error("database_error", error=str(exc))
+    return JSONResponse(status_code=503, content={"error": "DATABASE_UNAVAILABLE", "detail": "The database is temporarily unavailable. Please retry."})
 
 
-# ═══════════════════════════════════════════════════
-# Health & System Endpoints
-# ═══════════════════════════════════════════════════
+for r in (
+    verify_router, interactions_router, drugs_router, reports_router, pharmacies_router, caregiver_router,
+    voice_router, cabinet_router, prescription_router, push_router, clinic_router, audit_export_router,
+    pvpi_router, doctors_router, safety_cases_router, safety_intel_router,
+):
+    app.include_router(r, prefix="/api/v1")
+
+
+# ─────────────────────────── system ───────────────────────────
+def _db_last_updated(name: str) -> str:
+    path = DATA_DIR / name
+    if not path.exists():
+        return "missing"
+    try:
+        with sqlite3.connect(path) as conn:
+            row = conn.execute("SELECT value FROM metadata WHERE key='last_updated'").fetchone()
+            return row[0] if row else "unknown"
+    except sqlite3.Error:
+        return "unreadable"
+
 
 @app.get("/api/v1/health", tags=["system"])
-async def health_check(details: bool = False):
-    """Fast liveness check; optional details avoid blocking deployment probes."""
-    from services.audit import get_chain_length
+async def health_check() -> dict[str, Any]:
+    """Liveness: the process is up. Cheap; never touches remote services."""
+    return {"status": "ok", "service": settings.app_name, "version": settings.app_version}
+
+
+@app.get("/api/v1/ready", tags=["system"])
+async def readiness() -> JSONResponse:
+    """Readiness: dependencies needed to serve traffic are usable."""
     from services.supabase import get_supabase
 
+    checks: dict[str, Any] = {}
     db = get_supabase()
-    
-    # Read database freshness timestamps
-    import sqlite3
-    from pathlib import Path
-    
-    cdsco_updated = "unknown"
-    drugbank_updated = "unknown"
-    data_dir = Path(__file__).parent / "data"
-    
     try:
-        if (data_dir / "cdsco_registry.db").exists():
-            with sqlite3.connect(data_dir / "cdsco_registry.db") as conn:
-                res = conn.execute("SELECT value FROM metadata WHERE key='last_updated'").fetchone()
-                if res: cdsco_updated = res[0]
-    except Exception:
-        pass
-        
-    try:
-        if (data_dir / "drugbank_ce.db").exists():
-            with sqlite3.connect(data_dir / "drugbank_ce.db") as conn:
-                res = conn.execute("SELECT value FROM metadata WHERE key='last_updated'").fetchone()
-                if res: drugbank_updated = res[0]
-    except Exception:
-        pass
-
-    cabinet_stats = {
-        "total_medicines": 0,
-        "total_members": 0,
-        "last_safety_check": None
-    }
+        await db.query("audit_chain", limit=1)
+        checks["database"] = "ok" if db.cloud_available else "ok (local store)"
+    except (DatabaseReadError, DatabaseConnectionError) as exc:
+        checks["database"] = f"error: {exc}"[:200]
+    checks["cdsco_registry"] = _db_last_updated("cdsco_registry.db")
+    if settings.feature_batch_alerts:
+        from services.batch_alerts import get_index
+        cov = get_index().coverage()
+        checks["batch_alerts"] = {"status": cov["status"], "latest_month": cov["latest_month"], "is_sample_data": cov["is_sample_data"]}
+    ok = str(checks["database"]).startswith("ok")
+    return JSONResponse(status_code=200 if ok else 503, content={"status": "ready" if ok else "not_ready", "checks": checks})
 
 
 @app.get("/api/v1/capabilities", tags=["system"])
-async def capabilities():
+async def capabilities() -> dict[str, Any]:
     """Machine-readable feature contract for the frontend and deployment checks."""
     return {
+        "api_version": "v1",
         "verification": {
             "record_lookup": True,
             "physical_pack_authentication": bool(settings.manufacturer_verification_url),
             "requires_review_without_serial_check": True,
             "max_image_upload_bytes": settings.max_image_upload_bytes,
+            "supported_codes": ["GTIN/EAN/UPC", "NDC", "GS1 DataMatrix/HRI/Digital Link", "India GSR 823(E) QR"],
         },
         "clinical": {
             "interaction_provider": bool(settings.clinical_interaction_provider_url),
             "automated_dose_recommendations": False,
             "clinician_review_required": True,
         },
-        "data": {
-            "max_external_data_age_hours": settings.external_data_max_age_hours,
-            "cdsco_registry": True,
-            "regulatory_alerts": True,
+        "data": {"max_external_data_age_hours": settings.external_data_max_age_hours, "cdsco_registry": True, "regulatory_alerts": True},
+        "features": {
+            "pack_check": settings.feature_pack_check,
+            "batch_alerts": settings.feature_batch_alerts,
+            "lasa_guard": settings.feature_lasa_guard,
         },
-        "safety": {
-            "unsupported_input_behavior": "review_required",
-            "audit_trail": True,
-            "safety_case_workflow": True,
-        },
-    }
-    # Health probes must not wait on a remote database. Operators can explicitly
-    # request details when they need live aggregate metrics.
-    if details and db.cloud_available:
-        try:
-            mems = await db.query("family_members", limit=10000)
-            if mems: cabinet_stats["total_members"] = len(mems)
-            meds = await db.query("medicine_cabinet", limit=10000)
-            if meds: cabinet_stats["total_medicines"] = len(meds)
-            logs = await db.query("safety_check_log", limit=1, order_by="checked_at", order_desc=True)
-            if logs: cabinet_stats["last_safety_check"] = logs[0].get("checked_at")
-        except Exception:
-            pass
-
-    return {
-        "status": "healthy",
-        "service": settings.app_name,
-        "version": settings.app_version,
-        "audit_chain_length": await get_chain_length() if details and db.cloud_available else None,
-        "cabinet_stats": cabinet_stats,
-        "databases": {
-            "cdsco_last_updated": cdsco_updated,
-            "drugbank_last_updated": drugbank_updated
-        },
-        "services": {
-            "barcode": "local",
-            "openfda": "on_demand",
-            "recalls": "on_demand",
-            "interactions": "configured" if settings.clinical_interaction_provider_url else "review_required",
-            "manufacturer_serial": "configured" if settings.manufacturer_verification_url else "not configured",
-            "groq_ai": "connected" if settings.groq_api_key else "not configured",
-            "supabase": "configured" if db.cloud_available else "offline_fallback",
-        }
+        "safety": {"unsupported_input_behavior": "review_required", "audit_trail": True, "safety_case_workflow": True},
     }
 
-_stats_cache = {"timestamp": 0, "data": None}
+
+_stats_cache: dict[str, Any] = {"timestamp": 0.0, "data": None}
+
 
 @app.get("/api/v1/home/stats", tags=["system"])
-async def get_home_stats():
-    """Live stats for the homepage."""
-    import time
-    global _stats_cache
-    
+async def get_home_stats() -> dict[str, Any]:
+    """Aggregate counts for the home page (cached 60 s). 'flagged' = suspicious or counterfeit verdicts."""
     if time.time() - _stats_cache["timestamp"] < 60 and _stats_cache["data"]:
         return _stats_cache["data"]
-
     from services.supabase import get_supabase
-    db = get_supabase()
-    
-    stats = {
-        "verifications_performed": 0,
-        "counterfeits_flagged": 0,
-        "active_recalls": 0
-    }
-    
-    if db.available:
-        try:
-            # We fetch up to a limit and count. In a real PostgREST client, we'd use select(count=exact)
-            verifs = await db.query("verifications", limit=15000)
-            if verifs:
-                stats["verifications_performed"] = len(verifs)
-                stats["counterfeits_flagged"] = sum(1 for v in verifs if v.get("verdict") in ["counterfeit", "suspicious"])
-        except Exception:
-            pass
-            
-    _stats_cache = {"timestamp": time.time(), "data": stats}
+    stats = {"verifications_performed": 0, "counterfeits_flagged": 0, "active_recalls": 0}
+    try:
+        rows = await get_supabase().query("verifications", select="verdict,has_recall", limit=20000)
+        stats["verifications_performed"] = len(rows)
+        stats["counterfeits_flagged"] = sum(1 for v in rows if v.get("verdict") in ("counterfeit", "suspicious"))
+    except (DatabaseReadError, DatabaseConnectionError) as exc:
+        logger.warning("home_stats_unavailable", error=str(exc))
+    _stats_cache.update(timestamp=time.time(), data=stats)
     return stats
 
 
-# ═══════════════════════════════════════════════════
-# Audit Chain Endpoints
-# ═══════════════════════════════════════════════════
-
+# ─────────────────────────── audit (restricted) ───────────────────────────
 @app.get("/api/v1/audit/verify", tags=["audit"])
-async def verify_audit_chain():
-    """Verify the integrity of the SHA-256 hash-chained audit log."""
+async def verify_audit_chain(_user: CurrentUser = Depends(require_role("auditor", "regulator"))) -> dict[str, Any]:
+    """Recompute the full hash chain and report the first broken link, if any."""
     from services.audit import verify_chain
-    return verify_chain()
+    return await verify_chain()
 
 
 @app.get("/api/v1/audit/log", tags=["audit"])
-async def get_audit_log(limit: int = Query(50, le=200)):
-    """Get audit log entries."""
-    from services.audit import _audit_chain
-    return {"records": _audit_chain[-limit:], "total": len(_audit_chain)}
+async def get_audit_log(limit: int = Query(50, ge=1, le=200), _user: CurrentUser = Depends(require_role("auditor", "regulator"))) -> dict[str, Any]:
+    from services.audit import get_chain_length, list_records
+    return {"records": await list_records(limit), "total": await get_chain_length()}
 
 
-# ═══════════════════════════════════════════════════
-# Cold Chain (Open-Meteo API)
-# ═══════════════════════════════════════════════════
-
+# ─────────────────────────── utilities ───────────────────────────
 @app.get("/api/v1/cold-chain", tags=["cold-chain"])
-async def cold_chain_check(lat: float, lng: float):
-    """Check drug storage conditions at a location using Open-Meteo free weather API."""
+@limiter.limit("30/minute")
+async def cold_chain_check(request: Request, lat: float = Query(..., ge=-90, le=90), lng: float = Query(..., ge=-180, le=180)):
+    """Local weather vs. labelled storage range (context only; not product handling history)."""
     from services.cold_chain import check_cold_chain
     return await check_cold_chain(lat, lng)
 
 
-# ═══════════════════════════════════════════════════
-# Translation (LibreTranslate API)
-# ═══════════════════════════════════════════════════
-
 @app.get("/api/v1/translate/languages", tags=["translation"])
 async def get_languages():
-    """Get all supported translation languages."""
     from services.translation import get_supported_languages
     return {"languages": get_supported_languages()}
 
 
 @app.post("/api/v1/translate", tags=["translation"])
 @limiter.limit("20/minute")
-async def translate(request: Request, text: str, target: str, source: str = "en"):
-    """Translate text to any supported language via LibreTranslate (free, no API key)."""
+async def translate(request: Request, text: str = Query(..., max_length=2000), target: str = Query(..., max_length=10), source: str = Query("en", max_length=10)):
+    """Machine translation. Output is unverified; clinical text should be checked by a fluent reviewer."""
     from services.translation import translate_text
     translated = await translate_text(text, target, source)
-    return {
-        "original": text,
-        "translated": translated,
-        "source_language": source,
-        "target_language": target
-    }
+    return {"original": text, "translated": translated, "source_language": source, "target_language": target, "machine_translated": True}
 
-
-# ═══════════════════════════════════════════════════
-# GTIN / Barcode Validation (WHO GS1)
-# ═══════════════════════════════════════════════════
 
 @app.post("/api/v1/barcode/validate", tags=["barcode"])
 @limiter.limit("60/minute")
-async def validate_barcode(request: Request, barcode: str):
-    """Validate a GTIN/EAN/UPC barcode using GS1 check-digit algorithm.
-    Detects country of origin and extracts NDC if present."""
+async def validate_barcode(request: Request, barcode: str = Query(..., max_length=64)):
+    """GTIN/EAN/UPC structure and check-digit validation (not an authenticity check)."""
     from services.gtin import validate_gtin
     return validate_gtin(barcode)
 
 
 @app.post("/api/v1/barcode/parse-gs1", tags=["barcode"])
 @limiter.limit("60/minute")
-async def parse_gs1(request: Request, data: str):
-    """Parse a GS1 DataMatrix barcode — extracts GTIN, lot, expiry, serial number."""
+async def parse_gs1(request: Request, data: str = Query(..., max_length=512)):
+    """Parse GS1 element strings / HRI / Digital Link (GTIN, batch, expiry, serial)."""
     from services.gtin import parse_gs1_datamatrix
     return parse_gs1_datamatrix(data)
 
 
-# ═══════════════════════════════════════════════════
-# Vision AI (GPT-4o Vision)
-# ═══════════════════════════════════════════════════
-
 @app.post("/api/v1/vision/analyze", tags=["vision"])
 @limiter.limit("10/minute")
-async def analyze_image(request: Request, image: str):
-    """Analyze a pill/packaging photo using GPT-4o Vision.
-    Requires OPENAI_API_KEY. Returns shape, color, imprint, and suspicion level."""
+async def analyze_image(request: Request, image: str = Query(..., max_length=7_000_000)):
     from services.vision import analyze_pill_image
-    return await analyze_pill_image(image)
+    return {**(await analyze_pill_image(image)), "ai_generated": True, "requires_human_review": True}
 
 
 @app.post("/api/v1/vision/identify", tags=["vision"])
 @limiter.limit("10/minute")
-async def identify_pill(request: Request, description: str):
-    """Identify a pill from a text description using GPT-4o.
-    Example: 'small round white pill with M on one side and 523 on the other'"""
+async def identify_pill(request: Request, description: str = Query(..., max_length=500)):
     from services.vision import analyze_pill_description
-    return await analyze_pill_description(description)
+    return {**(await analyze_pill_description(description)), "ai_generated": True, "requires_human_review": True}
 
-
-# ═══════════════════════════════════════════════════
-# Refill Reminders
-# ═══════════════════════════════════════════════════
 
 @app.get("/api/v1/refill/schedule", tags=["refill"])
 @limiter.limit("30/minute")
-async def get_refill_schedule(request: Request):
-    """
-    Get refill schedule based on user's scan history via VerificationRepository.
-    """
+async def get_refill_schedule(request: Request, user: CurrentUser = Depends(require_current_user)):
+    """The caller's recently verified medicines (previously returned every user's scans)."""
     from routers.verify import verification_repo
-    from datetime import datetime
-
-    schedules = []
-    seen_drugs = set()
-
-    try:
-        verifs = await verification_repo.list_all(limit=100)
-        for v in verifs:
-            drug = v.get("drug_info", {})
-            name = drug.get("brand_name") or drug.get("generic_name") or v.get("medicine_name_resolved")
-            if name and name != "unknown" and name not in seen_drugs:
-                seen_drugs.add(name)
-                schedules.append({
-                    "drug": name,
-                    "ndc": drug.get("ndc"),
-                    "last_verified": str(v.get("id", ""))[:8],
-                    "verified_at": v.get("created_at", datetime.now().isoformat()),
-                    "confidence": v.get("confidence", 0)
-                })
-            if len(schedules) >= 10:
-                break
-    except Exception as e:
-        logger.error("refill_schedule_fetch_error", error=str(e))
-
+    schedules, seen = [], set()
+    for v in await verification_repo.list_by_user(user.user_id, limit=100):
+        name = v.get("brand_name") or v.get("generic_name")
+        if name and name not in seen:
+            seen.add(name)
+            schedules.append({"drug": name, "ndc": v.get("ndc"), "verification_id": v.get("id"), "verified_at": v.get("created_at")})
+        if len(schedules) >= 10:
+            break
     return {"schedules": schedules, "total": len(schedules)}
 
 
-# ═══════════════════════════════════════════════════
-# OpenFDA Adverse Events (FAERS)
-# ═══════════════════════════════════════════════════
-
 @app.get("/api/v1/adverse-events/{drug_name}", tags=["adverse-events"])
 @limiter.limit("30/minute")
-async def get_adverse_events(request: Request, drug_name: str, limit: int = Query(10, le=50)):
-    """Query FDA Adverse Event Reporting System (FAERS) for a drug."""
-    from services.openfda import get_adverse_events
-    events = await get_adverse_events(drug_name, limit=limit, api_key=settings.openfda_api_key)
-    return {
-        "drug": drug_name,
-        "total_events": len(events),
-        "events": events
-    }
+async def get_adverse_events(request: Request, drug_name: str, limit: int = Query(10, ge=1, le=50)):
+    """FAERS reports (US). Spontaneous reports do not establish that a drug caused an event."""
+    from services.openfda import get_adverse_events as fetch
+    events = await fetch(drug_name[:200], limit=limit, api_key=settings.openfda_api_key)
+    return {"drug": drug_name, "total_events": len(events), "events": events,
+            "interpretation_note": "FAERS reports are unverified and cannot establish causation or incidence."}
 
-
-# ═══════════════════════════════════════════════════
-# AI Intelligence (Groq — Llama 3.3 70B)
-# ═══════════════════════════════════════════════════
 
 @app.post("/api/v1/ai/explain-interaction", tags=["ai"])
 @limiter.limit("20/minute")
-async def ai_explain_interaction(request: Request, drug_a: str, drug_b: str, known_effect: str = ""):
-    """Use Groq/Llama to generate a patient-friendly explanation of a drug interaction."""
-    from services.groq_ai import ai_explain_interaction
-    result = await ai_explain_interaction(drug_a, drug_b, known_effect)
+async def ai_explain_interaction(request: Request, drug_a: str = Query(..., max_length=120), drug_b: str = Query(..., max_length=120), known_effect: str = Query("", max_length=500)):
+    from services.groq_ai import ai_explain_interaction as explain
+    result = await explain(drug_a, drug_b, known_effect)
     if result:
-        return {"available": True, **result}
-    return {"available": False, "reason": "Groq API key not configured or request failed"}
+        return {"available": True, **result, "ai_generated": True, "requires_human_review": True}
+    return {"available": False, "reason": "AI provider not configured or request failed"}
 
 
 @app.post("/api/v1/ai/analyze-drug", tags=["ai"])
 @limiter.limit("20/minute")
-async def ai_analyze_drug(request: Request, drug_name: str):
-    """Use Groq/Llama for comprehensive drug analysis (food interactions, timing, storage)."""
-    from services.groq_ai import ai_analyze_drug
-    result = await ai_analyze_drug(drug_name)
+async def ai_analyze_drug(request: Request, drug_name: str = Query(..., max_length=120)):
+    from services.groq_ai import ai_analyze_drug as analyze
+    result = await analyze(drug_name)
     if result:
-        return {"available": True, **result}
-    return {"available": False, "reason": "Groq API key not configured or request failed"}
+        return {"available": True, **result, "ai_generated": True, "requires_human_review": True}
+    return {"available": False, "reason": "AI provider not configured or request failed"}
 
-
-# ═══════════════════════════════════════════════════
-# LangGraph Agent Pipeline
-# ═══════════════════════════════════════════════════
 
 @app.post("/api/v1/agents/verify", tags=["agents"])
 @limiter.limit("10/minute")
-async def agent_verify(request: Request, barcode: str, drug_names: list[str] = Query(default=[]),
-                        patient_age: int = None, patient_weight: float = None,
-                        kidney_function: str = None):
-    """
-    Run the full 6-agent LangGraph verification pipeline.
-    Agents: Barcode → FDA Lookup → Recall Check → Interaction Scan → Safety Verdict → AI Report.
-    """
+async def agent_verify(request: Request, barcode: str = Query(..., max_length=512), drug_names: list[str] = Query(default=[]),
+                       patient_age: int | None = Query(None, ge=0, le=120), patient_weight: float | None = Query(None, gt=0, le=400),
+                       kidney_function: str | None = Query(None, max_length=20)):
+    """Multi-step LangGraph pipeline. AI-assisted; never a dosing instruction."""
+    if len(drug_names) > 10:
+        raise HTTPException(status_code=422, detail="At most 10 drug names")
     from services.langgraph_pipeline import run_full_verification
-    result = await run_full_verification(
-        barcode=barcode,
-        drug_names=drug_names,
-        patient_age=patient_age,
-        patient_weight=patient_weight,
-        kidney_function=kidney_function
-    )
-    return result
+    return await run_full_verification(barcode=barcode, drug_names=drug_names, patient_age=patient_age,
+                                       patient_weight=patient_weight, kidney_function=kidney_function)
 
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=settings.environment == "dev")

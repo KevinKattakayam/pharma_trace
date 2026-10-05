@@ -1,16 +1,17 @@
-from fastapi import APIRouter, HTTPException, Depends
-from pydantic import BaseModel
-from typing import List, Optional
 import uuid
-import httpx
 from datetime import datetime, timedelta
-from services.supabase import get_supabase
-from services.drug_resolver import resolve_all_drugs
-from services.interactions import check_interactions_enterprise
+from typing import Optional
+
+import httpx
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
+
 from config import get_settings
 from dependencies import require_current_user
 from models.schemas import CurrentUser
+from services.drug_resolver import resolve_all_drugs
 from services.groq_ai import ai_normalize_conditions
+from services.supabase import get_supabase
 
 router = APIRouter(prefix="/cabinet", tags=["cabinet", "family"])
 

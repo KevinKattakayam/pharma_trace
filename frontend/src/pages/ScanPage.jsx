@@ -20,7 +20,9 @@ export default function ScanPage() {
             item.retry_count >= 5 || (now - item.created_at > 7 * 24 * 60 * 60 * 1000)
          );
          setFailedSyncs(failed);
-       } catch (err) {}
+       } catch {
+         /* optional enhancement unavailable on this device; continue without it */
+       }
     };
     checkSyncQueue();
     

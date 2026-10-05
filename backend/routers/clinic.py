@@ -2,19 +2,25 @@
 Clinic Admin Router — Multi-tenant B2B dashboard for health organizations.
 Provides aggregate stats, health worker activity, and clinic management endpoints.
 """
-from fastapi import APIRouter, HTTPException, Depends
-from pydantic import BaseModel
+from datetime import datetime, timedelta, timezone
 from typing import Optional
-from datetime import datetime, timezone, timedelta
-from dependencies import get_current_user
+
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
+from starlette.requests import Request
+
+from dependencies import ensure_clinic_access, require_current_user, require_role
+from models.schemas import CurrentUser
+from services.limiter import limiter
 
 router = APIRouter(prefix="/clinic", tags=["clinic"])
 
 
 class ClinicCreateRequest(BaseModel):
-    name: str
-    address: Optional[str] = None
-    contact_email: Optional[str] = None
+    name: str = Field(..., min_length=2, max_length=160)
+    address: Optional[str] = Field(default=None, max_length=300)
+    contact_email: str = Field(..., min_length=5, max_length=200, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+    admin_password: str = Field(..., min_length=12, max_length=128)
 
 
 class ClinicStatsResponse(BaseModel):
@@ -32,92 +38,77 @@ class ClinicLoginRequest(BaseModel):
     email: str
     password: str
 
+# Precomputed hash so unknown e-mails cost the same bcrypt time as known ones (no user enumeration).
+from functools import lru_cache
+
+
+@lru_cache(maxsize=1)
+def _dummy_hash() -> bytes:
+    import bcrypt
+    return bcrypt.hashpw(b"timing-equaliser", bcrypt.gensalt(rounds=12))
+
+
 @router.post("/login")
-async def clinic_login(req: ClinicLoginRequest):
-    """
-    Authenticate a clinic administrator via email and password.
-    Issues a JWT containing the clinic_id on success.
-    """
+@limiter.limit("5/minute")
+async def clinic_login(request: Request, req: ClinicLoginRequest):
+    """Authenticate a clinic administrator; issues a short-lived JWT scoped to the clinic."""
+    import bcrypt
+    import jwt
+
+    from config import get_settings
     from services.supabase import get_supabase
-    db = get_supabase()
-    if not db.available:
-        raise HTTPException(status_code=503, detail="Database not configured")
 
+    rows = await get_supabase().query("clinics", select="id,password_hash", filters={"contact_email": req.email.lower().strip()}, limit=1)
+    stored = (rows[0].get("password_hash") if rows else None) or ""
+    candidate = stored.encode() if stored.startswith("$2") else _dummy_hash()
     try:
-        # Fetch clinic by email
-        results = await db.query(
-            "clinics",
-            select="id,password_hash",
-            filters={"contact_email": req.email.lower().strip()},
-            limit=1
-        )
-        if not results:
-            raise HTTPException(status_code=401, detail="Invalid credentials")
+        ok = bcrypt.checkpw(req.password.encode()[:72], candidate)
+    except ValueError:
+        ok = False
+    if not (rows and stored.startswith("$2") and ok):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
 
-        clinic = results[0]
-        stored_hash = clinic.get("password_hash")
+    settings = get_settings()
+    now = datetime.now(timezone.utc)
+    clinic_id = rows[0]["id"]
+    token = jwt.encode(
+        {"sub": f"clinic-admin:{clinic_id}", "role": "clinic_admin", "clinic_id": clinic_id,
+         "iss": settings.jwt_issuer, "iat": now, "exp": now + timedelta(hours=settings.jwt_expiration_hours)},
+        settings.jwt_secret, algorithm=settings.jwt_algorithm,
+    )
+    return {"access_token": token, "token_type": "bearer", "expires_in": settings.jwt_expiration_hours * 3600, "clinic_id": clinic_id}
 
-        if not stored_hash:
-            raise HTTPException(status_code=401, detail="Invalid credentials")
 
-        # Verify password using passlib
-        try:
-            from passlib.context import CryptContext
-            pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-            if not pwd_context.verify(req.password, stored_hash):
-                raise HTTPException(status_code=401, detail="Invalid credentials")
-        except ImportError:
-            # Fallback if passlib isn't installed in this env yet (prevent total lockout in dev)
-            if req.password != stored_hash:
-                raise HTTPException(status_code=401, detail="Invalid credentials")
-
-        import jwt
-        from config import get_settings
-        settings = get_settings()
-        secret = settings.jwt_secret
-        
-        # Issue token with 24h expiration
-        from datetime import datetime, timedelta, timezone
-        exp = datetime.now(timezone.utc) + timedelta(hours=settings.jwt_expiration_hours)
-        token = jwt.encode({"clinic_id": clinic["id"], "exp": exp}, secret, algorithm=settings.jwt_algorithm)
-        
-        return {"access_token": token, "token_type": "bearer"}
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail="Authentication failed")
 @router.post("/create")
-async def create_clinic(req: ClinicCreateRequest):
-    """Register a new clinic in the system."""
-    from services.supabase import get_supabase
-    db = get_supabase()
-    if not db.available:
-        raise HTTPException(status_code=503, detail="Database not configured")
-
+async def create_clinic(req: ClinicCreateRequest, _admin: CurrentUser = Depends(require_role("admin"))):
+    """Register a clinic tenant (platform admins only). Stores a bcrypt hash, never the password."""
     import uuid
+
+    import bcrypt
+
+    from services.supabase import get_supabase
+
+    db = get_supabase()
+    email = req.contact_email.lower().strip()
+    if await db.query("clinics", select="id", filters={"contact_email": email}, limit=1):
+        raise HTTPException(status_code=409, detail="A clinic with this e-mail already exists")
     clinic_id = str(uuid.uuid4())
-    try:
-        await db.insert("clinics", {
-            "id": clinic_id,
-            "name": req.name,
-            "address": req.address,
-            "contact_email": req.contact_email,
-        })
-        return {"clinic_id": clinic_id, "name": req.name, "status": "created"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    await db.insert("clinics", {
+        "id": clinic_id, "name": req.name, "address": req.address, "contact_email": email,
+        "password_hash": bcrypt.hashpw(req.admin_password.encode()[:72], bcrypt.gensalt(rounds=12)).decode(),
+    })
+    return {"clinic_id": clinic_id, "name": req.name, "status": "created"}
 
 
 @router.get("/{clinic_id}/dashboard")
-async def clinic_dashboard(clinic_id: str, from_date: Optional[str] = None, to_date: Optional[str] = None, user: dict = Depends(get_current_user)):
+async def clinic_dashboard(clinic_id: str, from_date: Optional[str] = None, to_date: Optional[str] = None, user: CurrentUser = Depends(require_current_user)):
     """
     Aggregate stats for a clinic administrator.
     Returns: total scans this month, recall encounters, most verified drugs,
     counterfeit flag rate, and daily activity breakdown.
     Defaults to a 30-day window if dates are not provided.
     """
-    if user.get("clinic_id") != clinic_id:
-        raise HTTPException(status_code=403, detail="Not authorized to view this clinic dashboard")
+    ensure_clinic_access(user, clinic_id)
         
     from services.supabase import get_supabase
     db = get_supabase()
@@ -231,13 +222,14 @@ async def clinic_dashboard(clinic_id: str, from_date: Optional[str] = None, to_d
 
 
 @router.get("/{clinic_id}/workers")
-async def clinic_workers(clinic_id: str, from_date: Optional[str] = None, to_date: Optional[str] = None, user: dict = Depends(get_current_user)):
+async def clinic_workers(clinic_id: str, from_date: Optional[str] = None, to_date: Optional[str] = None, user: CurrentUser = Depends(require_current_user)):
     """
     List health worker activity for a clinic.
     Groups verifications by user_id to show per-worker scan counts.
     Defaults to 30 days.
     """
-    if user.get("clinic_id") != clinic_id:
+    ensure_clinic_access(user, clinic_id)
+    if False:
         raise HTTPException(status_code=403, detail="Not authorized to view this clinic data")
         
     from services.supabase import get_supabase

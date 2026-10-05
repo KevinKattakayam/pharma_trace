@@ -4,11 +4,13 @@ Uses normalized trigram token similarity (RapidFuzz / Jaccard overlap) to match 
 patient queries (e.g., 'high fever and headache' vs 'severe headache with fever') and return cached
 clinical AI responses instantly in <5ms without consuming LLM tokens.
 """
-import time
 import asyncio
+import time
+from typing import Any, Optional
+
 import structlog
-from typing import Optional, Any
 from rapidfuzz import fuzz
+
 from services.cache_manager import get_cache
 
 logger = structlog.get_logger()

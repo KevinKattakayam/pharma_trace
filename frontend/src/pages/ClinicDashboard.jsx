@@ -47,26 +47,27 @@ export default function ClinicDashboard() {
   const [exportStart, setExportStart] = useState('');
   const [exportEnd, setExportEnd] = useState('');
 
-  const handleLogin = async (id) => {
-    if (!id) return;
+  const [loginEmail, setLoginEmail] = useState('');
+  const [loginPassword, setLoginPassword] = useState('');
+
+  const loadDashboard = async (id) => {
+    const [dash, work] = await Promise.all([api.getClinicDashboard(id), api.getClinicWorkers(id)]);
+    setDashboard(dash);
+    setWorkers(work.workers || []);
+    localStorage.setItem('pharmatrace_clinic_id', id);
+    setClinicId(id);
+  };
+
+  // Clinic access requires the administrator's e-mail and password; a clinic ID alone grants nothing.
+  const handleLogin = async () => {
+    if (!loginEmail || !loginPassword) return;
     setLoading(true);
     setError('');
     try {
-      // First get the token
-      const authRes = await api.loginClinic(id);
-      api.setToken(authRes.access_token);
-      
-      // Then load dashboard data
-      const [dash, work] = await Promise.all([
-        api.getClinicDashboard(id),
-        api.getClinicWorkers(id),
-      ]);
-      setDashboard(dash);
-      setWorkers(work.workers || []);
-      
-      // Only set local storage if successful
-      localStorage.setItem('pharmatrace_clinic_id', id);
-      setClinicId(id);
+      const authRes = await api.loginClinic(loginEmail, loginPassword);
+      await api.setToken(authRes.access_token);
+      setLoginPassword('');
+      await loadDashboard(authRes.clinic_id);
     } catch (e) {
       setError(e.message);
     } finally {
@@ -74,13 +75,20 @@ export default function ClinicDashboard() {
     }
   };
 
+  const resumeSession = async (id) => {
+    setLoading(true);
+    try {
+      await loadDashboard(id);
+    } catch {
+      localStorage.removeItem('pharmatrace_clinic_id'); // expired or revoked: show sign-in
+    } finally {
+      setLoading(false);
+    }
+  };
+
   useEffect(() => {
     const savedId = localStorage.getItem('pharmatrace_clinic_id');
-    const savedToken = localStorage.getItem('pharmatrace_token');
-    // Auto-login only if we have both ID and token to prevent 401s from triggering error loops
-    if (savedId && savedToken) {
-      handleLogin(savedId);
-    }
+    if (savedId) resumeSession(savedId);
   }, []);
 
   const handleRegister = async (e) => {
@@ -88,10 +96,11 @@ export default function ClinicDashboard() {
     if (!regName.trim()) return;
     setLoading(true);
     try {
-      const res = await api.createClinic({ name: regName, contact_email: regEmail, address: regAddr });
-      const newId = res.clinic_id;
+      // Clinic accounts are created by platform administrators (POST /clinic/create is admin-only).
+      await api.createClinic({ name: regName, contact_email: regEmail, address: regAddr });
       setShowRegister(false);
-      await handleLogin(newId);
+      setError('Clinic registered. Sign in with the administrator e-mail and password.');
+      setLoading(false);
     } catch (e) {
       setError(e.message);
       setLoading(false);
@@ -143,16 +152,17 @@ export default function ClinicDashboard() {
             <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>🏥</div>
             <h2 style={{ fontSize: '1.25rem', fontWeight: 800, marginBottom: '1rem' }}>Access Your Clinic</h2>
             <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '1.5rem' }}>
-              <input
-                type="text"
-                value={clinicId}
-                onChange={(e) => setClinicId(e.target.value)}
-                placeholder="Enter Clinic ID"
-                style={{ flex: 1, textAlign: 'center', fontFamily: 'var(--mono)', letterSpacing: '0.05em' }}
-              />
-              <button className="btn btn--primary" onClick={() => handleLogin(clinicId)} disabled={!clinicId || loading}>
-                {loading ? 'Loading...' : 'Access'}
-              </button>
+              <form onSubmit={(e) => { e.preventDefault(); handleLogin(); }} style={{ display: 'grid', gap: '0.75rem', flex: 1 }}>
+                <label htmlFor="clinic-email" className="sr-only">Administrator e-mail</label>
+                <input id="clinic-email" type="email" autoComplete="username" value={loginEmail}
+                  onChange={(e) => setLoginEmail(e.target.value)} placeholder="Administrator e-mail" required />
+                <label htmlFor="clinic-password" className="sr-only">Password</label>
+                <input id="clinic-password" type="password" autoComplete="current-password" value={loginPassword}
+                  onChange={(e) => setLoginPassword(e.target.value)} placeholder="Password" required />
+                <button type="submit" className="btn btn--primary" disabled={!loginEmail || !loginPassword || loading}>
+                  {loading ? 'Signing in…' : 'Sign in'}
+                </button>
+              </form>
             </div>
             <div style={{ fontSize: '0.8125rem', color: 'var(--text-3)' }}>
               Don't have a clinic account?{' '}

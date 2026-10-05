@@ -1,59 +1,72 @@
-"""
-FastAPI dependencies for JWT authentication and dynamic CurrentUser context injection.
-"""
+"""FastAPI auth dependencies: verified JWT → ``CurrentUser``; role and tenant guards."""
+from __future__ import annotations
+
+from collections.abc import Callable
+
 import jwt
-from fastapi import Header, HTTPException, Depends
-from typing import Optional
+import structlog
+from fastapi import Depends, Header, HTTPException
+
 from config import get_settings
 from models.schemas import CurrentUser
+from services.security import decode_token_strict, subject_of
+
+logger = structlog.get_logger()
+
+# Roles recognised by the platform. "admin" is a superset; others are least-privilege.
+ROLES = frozenset({"user", "caregiver", "pharmacist", "clinic_admin", "regulator", "auditor", "admin"})
 
 
-def get_current_user(authorization: Optional[str] = Header(None)) -> Optional[CurrentUser]:
-    """
-    Dependency to validate JWT and extract user context into a CurrentUser object.
-    Optional for public endpoints (returns None if no token provided).
-    """
-    if not authorization or not authorization.startswith("Bearer "):
+def get_current_user(authorization: str | None = Header(None)) -> CurrentUser | None:
+    """Optional auth: ``None`` when no bearer token is sent; 401 when one is sent but invalid."""
+    if not authorization:
         return None
-    
-    token = authorization.split(" ")[1]
-    settings = get_settings()
-    
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not token.strip():
+        return None
     try:
-        secret = settings.jwt_secret
-        payload = jwt.decode(
-            token,
-            secret,
-            algorithms=["HS256"],
-            options={"verify_exp": True, "verify_signature": True}
-        )
-        user_id = payload.get("sub") or payload.get("user_id") or payload.get("uid")
-        if not user_id:
-            raise HTTPException(status_code=401, detail="Token missing subject identifier (sub/user_id)")
-            
-        return CurrentUser(
-            user_id=str(user_id),
-            role=payload.get("role", "user"),
-            clinic_id=payload.get("clinic_id")
-        )
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=401, detail="Token has expired")
-    except jwt.PyJWTError:
-        raise HTTPException(status_code=401, detail="Invalid token signature or format")
+        payload = decode_token_strict(token.strip())
+    except jwt.ExpiredSignatureError as exc:
+        raise HTTPException(status_code=401, detail="Token has expired") from exc
+    except jwt.PyJWTError as exc:
+        raise HTTPException(status_code=401, detail="Invalid token") from exc
+
+    user_id = subject_of(payload)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Token missing subject identifier")
+    role = payload.get("role", "user")
+    if role not in ROLES:
+        raise HTTPException(status_code=401, detail="Token carries an unknown role")
+    return CurrentUser(user_id=user_id, role=role, clinic_id=payload.get("clinic_id"))
 
 
-def require_current_user(user: Optional[CurrentUser] = Depends(get_current_user)) -> CurrentUser:
-    """
-    Strict dependency for protected routes (/cabinet, /push, /caregiver).
-    Requires valid JWT authentication. In local testing/demo mode, only falls back to demo user
-    if allow_unauthenticated_demo_user is explicitly set to True in configuration.
-    """
-    if not user:
-        settings = get_settings()
-        if settings.allow_unauthenticated_demo_user and settings.environment != "prod":
-            import structlog
-            logger = structlog.get_logger()
-            logger.warning("security_auth_bypass_triggered", detail="Unauthenticated request allowed as demo-user-123 because allow_unauthenticated_demo_user=True")
-            return CurrentUser(user_id="demo-user-123", role="user")
-        raise HTTPException(status_code=401, detail="401 Unauthorized: Valid authentication token required.")
-    return user
+def require_current_user(user: CurrentUser | None = Depends(get_current_user)) -> CurrentUser:
+    if user:
+        return user
+    settings = get_settings()
+    if settings.allow_unauthenticated_demo_user and not settings.is_strict:
+        logger.warning("security_auth_bypass_triggered", detail="demo user substituted (dev only)")
+        return CurrentUser(user_id="demo-user-123", role="user")
+    raise HTTPException(status_code=401, detail="Authentication required")
+
+
+def require_role(*roles: str) -> Callable[[CurrentUser], CurrentUser]:
+    """Dependency factory: caller must hold one of ``roles`` (``admin`` always passes)."""
+    unknown = set(roles) - ROLES
+    if unknown:
+        raise ValueError(f"unknown roles: {unknown}")
+
+    def _guard(user: CurrentUser = Depends(require_current_user)) -> CurrentUser:
+        if user.role == "admin" or user.role in roles:
+            return user
+        raise HTTPException(status_code=403, detail="Insufficient role for this operation")
+
+    return _guard
+
+
+def ensure_clinic_access(user: CurrentUser, clinic_id: str) -> None:
+    """Tenant guard: clinic-scoped data is visible only to that clinic (or admin/regulator)."""
+    if user.role in ("admin", "regulator", "auditor"):
+        return
+    if not user.clinic_id or user.clinic_id != clinic_id:
+        raise HTTPException(status_code=403, detail="Not authorised for this clinic")

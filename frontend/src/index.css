@@ -829,3 +829,5 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .safety-review-banner { background: #382a17; color: #f7d69f; border-color: #805b22; }
   .home-section--alt, .demo-bar { background: #17211e; }
 }
+
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}

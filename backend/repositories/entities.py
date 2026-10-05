@@ -2,7 +2,8 @@
 Entity repositories implementing VerificationRepository, AuditRepository, ReportRepository, CaregiverRepository, PharmacyRepository.
 Enforces direct Supabase PostgREST access and strict RLS tenant isolation.
 """
-from typing import List, Dict, Any, Optional
+from typing import Any, Dict, List
+
 from repositories.base import BaseRepository
 
 
@@ -16,13 +17,12 @@ class VerificationRepository(BaseRepository):
 
 
 class AuditRepository(BaseRepository):
-    """Repository managing immutable SHA-256 hash-chained audit logs."""
-    table_name = "safety_check_log"
+    """Append-only SHA-256 hash chain (``audit_chain`` table, see migrations/phase5_audit_chain.sql).
 
-    async def get_latest_hash(self) -> Optional[str]:
-        """Fetch the last hash in the audit chain."""
-        records = await self.list_all(limit=1, order_by="id", order_desc=True)
-        return records[0].get("audit_hash") if records else None
+    Previously pointed at ``safety_check_log`` (a cabinet table with incompatible columns),
+    so every production audit write was rejected (audit finding R1).
+    """
+    table_name = "audit_chain"
 
     async def update(self, *args, **kwargs):
         raise NotImplementedError("SECURITY VIOLATION: Audit logs are immutable and append-only. UPDATE operations are forbidden.")

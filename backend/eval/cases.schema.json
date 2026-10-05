@@ -1,0 +1,10 @@
+{"$schema": "https://json-schema.org/draft/2020-12/schema", "title": "PharmaTrace eval set", "type": "object",
+ "required": ["synthetic", "provenance", "cases"],
+ "properties": {
+  "synthetic": {"type": "boolean"},
+  "provenance": {"type": "string", "description": "Who labelled it, when, consent and licence"},
+  "cases": {"type": "array", "items": {"type": "object", "required": ["id", "endpoint", "input", "expected"],
+   "properties": {"id": {"type": "string"}, "endpoint": {"enum": ["pack_check", "verify_barcode", "lasa"]},
+    "input": {"type": "object"}, "stubs": {"type": "object"},
+    "expected": {"type": "object", "properties": {"verdict": {"type": "string"}, "status": {"type": "string"},
+     "reasons_include": {"type": "array", "items": {"type": "string"}}, "reasons_exclude": {"type": "array", "items": {"type": "string"}}}}}}}}}

@@ -2,13 +2,15 @@
 Enterprise ACID Database Transaction Manager.
 Provides async connection pooling via asyncpg (if configured) with ACID-compliant SQLite EXCLUSIVE transaction fallback.
 """
-import sqlite3
 import asyncio
 import re
-import structlog
+import sqlite3
 from contextlib import asynccontextmanager
-from typing import Optional, Any, Generator, AsyncGenerator
 from pathlib import Path
+from typing import Any, AsyncGenerator, Optional
+
+import structlog
+
 from config import get_settings
 
 logger = structlog.get_logger()

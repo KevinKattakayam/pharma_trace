@@ -1,0 +1,4 @@
+# Offline data-ingestion scripts (scripts/*.py). Not needed by the API process.
+-r requirements.txt
+pdfplumber>=0.11
+defusedxml>=0.7

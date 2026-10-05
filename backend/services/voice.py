@@ -2,16 +2,14 @@
 Voice Service for vernacular audio transcription and translation.
 Uses Groq Whisper API (whisper-large-v3-turbo) and LibreTranslate.
 """
-import httpx
-from config import get_settings
-from services.translation import translate_text
 
 GROQ_AUDIO_API = "https://api.groq.com/openai/v1/audio/transcriptions"
 
 import asyncio
+import io
+
 from fastapi import WebSocket
 from groq import AsyncGroq
-import io
 
 client = AsyncGroq()
 

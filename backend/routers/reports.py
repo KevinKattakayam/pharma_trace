@@ -3,6 +3,7 @@ Reports router — community pharmacovigilance reporting, heatmap, and outbreak 
 All data comes from real user submissions. No sample/dummy data.
 """
 from fastapi import APIRouter, Request
+
 from models.schemas import ReportRequest, ReportResponse
 from services.anonymous import create_report, get_all_reports
 

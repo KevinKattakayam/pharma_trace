@@ -1,7 +1,8 @@
-from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException
 from pydantic import BaseModel
+from pywebpush import WebPushException, webpush
+
 from config import get_settings
-from pywebpush import webpush, WebPushException
 from dependencies import require_current_user
 from models.schemas import CurrentUser
 
@@ -42,11 +43,15 @@ async def subscribe(sub: PushSubscription, current_user: CurrentUser = Depends(r
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/notify-refill")
-async def notify_refill(background_tasks: BackgroundTasks, cron_secret: str = None):
-    """Trigger refill notifications via CRON."""
+async def notify_refill(background_tasks: BackgroundTasks, x_cron_secret: str | None = Header(default=None)):
+    """Trigger refill notifications (scheduler only). Secret travels in the X-Cron-Secret header,
+    never the query string, and is compared in constant time (audit S9)."""
+    from services.security import constant_time_equals
     settings = get_settings()
-    if cron_secret != settings.hmac_daily_secret:
-        raise HTTPException(status_code=401, detail="401 Unauthorized: Invalid CRON trigger secret.")
+    if not settings.cron_secret:
+        raise HTTPException(status_code=404, detail="Cron endpoints are disabled (CRON_SECRET not set)")
+    if not constant_time_equals(x_cron_secret, settings.cron_secret):
+        raise HTTPException(status_code=401, detail="Invalid cron secret")
 
     if not settings.vapid_private_key:
         raise HTTPException(status_code=501, detail="501 Not Implemented: VAPID keys unconfigured.")

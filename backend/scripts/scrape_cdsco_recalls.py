@@ -8,10 +8,10 @@ Usage (Railway cron service):
 """
 import asyncio
 import re
-import httpx
 from datetime import datetime, timezone
-from bs4 import BeautifulSoup
 
+import httpx
+from bs4 import BeautifulSoup
 
 CDSCO_RECALLS_URL = "https://cdsco.gov.in/opencms/opencms/en/Alerts/Drugs-Alerts/"
 # Fallback: CDSCO also publishes recall notices at these URLs
@@ -190,7 +190,7 @@ async def persist_to_supabase(records: list[dict], source_run_id: str = None):
                     "error_message": r["error"]
                 })
                 errors += 1
-            except:
+            except Exception:  # noqa: BLE001 - narrowed from bare except (audit R12)
                 pass
             continue
             
@@ -219,7 +219,7 @@ async def persist_to_supabase(records: list[dict], source_run_id: str = None):
 
 async def main():
     print(f"[CDSCO] Starting recall scrape at {datetime.now(timezone.utc).isoformat()}")
-    from services.data_governance import start_source_run, finish_source_run
+    from services.data_governance import finish_source_run, start_source_run
     run_id = await start_source_run("CDSCO alerts", CDSCO_RECALLS_URL)
     try:
         records = await scrape_cdsco_recalls()

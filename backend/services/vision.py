@@ -2,9 +2,10 @@
 Vision AI service using OpenRouter (GPT-4o Vision) for pill/packaging analysis.
 OpenRouter provides access to GPT-4o, Claude, Gemini etc. via a single API.
 """
-import httpx
 import json
-from typing import Optional
+
+import httpx
+
 from config import get_settings
 
 OPENROUTER_BASE = "https://openrouter.ai/api/v1"
@@ -253,8 +254,9 @@ Be highly accurate. Correct obvious spelling mistakes if you are certain of the 
         return {"available": False, "reason": str(e), "medicines": []}
 
 
-import difflib
 import asyncio
+import difflib
+
 
 def reconcile_ocr_vision(ocr_text: str, vision_text: str) -> dict:
     """Merge OCR and Vision outputs using edit-distance reconciliation."""

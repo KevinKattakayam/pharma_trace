@@ -2,11 +2,12 @@
 Enterprise Circuit Breaker Pattern & Adaptive Bulkheading.
 Prevents connection pool starvation and thread exhaustion during external API outages.
 """
-import time
 import asyncio
-import structlog
+import time
 from functools import wraps
-from typing import Callable, Any, Dict
+from typing import Any, Callable, Dict
+
+import structlog
 
 logger = structlog.get_logger()
 

@@ -1,27 +1,31 @@
 """
 Anonymous zero-knowledge reporting pipeline via ReportRepository.
 """
-import uuid
 import secrets
+import uuid
 from datetime import datetime, timezone
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
+
 from repositories.entities import ReportRepository
 
 repo = ReportRepository()
 
 
 def generate_anonymous_id(ip_address: Optional[str] = None) -> str:
-    """Generate a daily rotating HMAC ID for deduplication without cross-day tracking."""
-    if not ip_address:
-        return secrets.token_hex(16)
-    import hmac
-    import hashlib
-    from config import get_settings
-    env_secret = get_settings().hmac_daily_secret
-    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    daily_key = hashlib.sha256(f"{env_secret}{date_str}".encode()).digest()
-    
-    return hmac.new(daily_key, ip_address.encode(), hashlib.sha256).hexdigest()[:16]
+    """Random, unlinkable report token (audit S3).
+
+    The previous HMAC(IP) design used a public default key, letting anyone recover reporters'
+    IPs by enumerating the IPv4 space. The token is returned to the reporter so they can check
+    status; it is not derived from anything about them. ``ip_address`` is accepted and ignored
+    for backward compatibility.
+    """
+
+    return secrets.token_hex(8)
+
+
+import secrets as _secrets
+
+_rng = _secrets.SystemRandom()  # unpredictable jitter (audit: S311)
 
 
 def anonymize_location(lat: Optional[float], lng: Optional[float]) -> Tuple[Optional[float], Optional[float]]:
@@ -30,8 +34,8 @@ def anonymize_location(lat: Optional[float], lng: Optional[float]) -> Tuple[Opti
     if lat is None or lng is None:
         return None, None
     
-    j_lat = float(lat) + random.uniform(-0.05, 0.05)
-    j_lng = float(lng) + random.uniform(-0.05, 0.05)
+    j_lat = float(lat) + _rng.uniform(-0.05, 0.05)
+    j_lng = float(lng) + _rng.uniform(-0.05, 0.05)
     
     return round(j_lat, 1), round(j_lng, 1)
 
